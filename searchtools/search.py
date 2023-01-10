@@ -372,7 +372,36 @@ class SearchResultsCollection(object):
         return iter(self._results.items())
 
 
-class FileSearcher(object):
+class SearcherBase(abc.ABC):
+
+    @abc.abstractmethod
+    def add(self, searchdef):
+        """
+        Add a search criterea.
+
+        @param searchdef: SearchDef object
+        """
+
+    @abc.abstractproperty
+    def files(self):
+        """ Returns a list of files we will be searching. """
+
+    @abc.abstractproperty
+    def num_parallel_tasks(self):
+        """
+        Returns an integer representing the maximum number of tasks we can
+        run in parallel. This will typically be bound by the number of
+        cpu threads available.
+        """
+
+    @abc.abstractmethod
+    def run(self):
+        """
+        Execute all searches.
+        """
+
+
+class FileSearcher(SearcherBase):
 
     def __init__(self, max_parallel_tasks=8, max_logrotate_depth=7,
                  constraint=None):
@@ -392,15 +421,15 @@ class FileSearcher(object):
                   self.constraint is not None)
 
     @property
-    def num_cpus(self):
+    def num_parallel_tasks(self):
         if self.max_parallel_tasks == 0:
             cpus = 1  # i.e. no parallelism
         else:
             cpus = min(self.max_parallel_tasks, os.cpu_count())
 
-        return min(self.num_files_to_search, cpus)
+        return min(len(self.files), cpus)
 
-    def add_search_term(self, searchdef, path, allow_global_constraints=True):
+    def add(self, searchdef, path, allow_global_constraints=True):
         """Add a term to search for.
 
         A search definition is registered against a path which can be a
@@ -697,19 +726,19 @@ class FileSearcher(object):
         return dir_contents
 
     @property
-    def num_files_to_search(self):
-        count = 0
+    def files(self):
+        _files = []
         for user_path in self.paths:
             if os.path.isfile(user_path):
-                count += 1
+                _files.append(user_path)
             elif os.path.isdir(user_path):
-                count += len(self.filtered_paths(user_path))
+                _files.extend(self.filtered_paths(user_path))
             else:
-                count += len(self.filtered_paths(glob.glob(user_path)))
+                _files.extend(self.filtered_paths(glob.glob(user_path)))
 
-        return count
+        return _files
 
-    def search(self):
+    def run(self):
         """Execute all the search queries.
 
         @return: search results
@@ -721,12 +750,12 @@ class FileSearcher(object):
                       "do")
             return self.results
 
-        num_files = self.num_files_to_search
+        num_files = len(self.files)
         if not num_files:
             log.debug("filesearcher: no files to search")
             return self.results
 
-        with multiprocessing.Pool(processes=self.num_cpus) as pool:
+        with multiprocessing.Pool(processes=self.num_parallel_tasks) as pool:
             jobs = {}
             for user_path in self.paths:
                 jobs[user_path] = []
@@ -751,7 +780,8 @@ class FileSearcher(object):
             num_searches = sum([len(jobs[p]) * len(self.paths[p])
                                 for p in jobs])
             log.debug("filesearcher: running processes=%d files=%d "
-                      "searches=%d", self.num_cpus, num_files, num_searches)
+                      "searches=%d", self.num_parallel_tasks,
+                      num_files, num_searches)
 
             for user_path in jobs:
                 for fpath, job in jobs[user_path]:

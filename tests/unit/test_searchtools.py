@@ -125,26 +125,27 @@ class TestSearchTools(TestSearchToolsBase):
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_cpus_no_override(self, mock_cpu_count):
+    def test_filesearcher_num_parallel_tasks_no_override(self, mock_cpu_count):
         mock_cpu_count.return_value = 3
-        with mock.patch.object(FileSearcher, 'num_files_to_search', 4):
+        with mock.patch.object(FileSearcher, 'files', range(4)):
             s = FileSearcher()
-            self.assertEqual(s.num_cpus, 3)
+            self.assertEqual(s.num_parallel_tasks, 3)
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_cpus_files_capped(self, mock_cpu_count):
+    def test_filesearcher_num_parallel_tasks_files_capped(self,
+                                                          mock_cpu_count):
         mock_cpu_count.return_value = 3
-        with mock.patch.object(FileSearcher, 'num_files_to_search', 2):
+        with mock.patch.object(FileSearcher, 'files', range(2)):
             s = FileSearcher()
-            self.assertEqual(s.num_cpus, 2)
+            self.assertEqual(s.num_parallel_tasks, 2)
 
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_cpus_w_override(self, mock_cpu_count):
+    def test_filesearcher_num_parallel_tasks_w_override(self, mock_cpu_count):
         mock_cpu_count.return_value = 3
-        with mock.patch.object(FileSearcher, 'num_files_to_search', 4):
+        with mock.patch.object(FileSearcher, 'files', range(4)):
             s = FileSearcher(max_parallel_tasks=2)
-            self.assertEqual(s.num_cpus, 2)
+            self.assertEqual(s.num_parallel_tasks, 2)
 
     def test_filesearcher_error(self):
         s = FileSearcher()
@@ -155,8 +156,8 @@ class TestSearchTools(TestSearchToolsBase):
 
             mock_init.side_effect = fake_init
             path = os.path.join(self.data_root)
-            s.add_search_term(SearchDef("."), path)
-            s.search()
+            s.add(SearchDef("."), path)
+            s.run()
 
     def test_filesearch_filesort(self):
         ordered_contents = []
@@ -235,10 +236,8 @@ class TestSearchTools(TestSearchToolsBase):
                                body=SearchDef(r"leads to"),
                                end=SearchDef(r"^an (ending)$"),
                                tag="seq-search-test1")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 1)
         for id in sections:
@@ -256,10 +255,8 @@ class TestSearchTools(TestSearchToolsBase):
                                body=SearchDef(r"leads to"),
                                end=SearchDef(r"^an (ending)$"),
                                tag="seq-search-test2")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 1)
         for id in sections:
@@ -277,10 +274,8 @@ class TestSearchTools(TestSearchToolsBase):
                                body=SearchDef(r"leads to"),
                                end=SearchDef(r"^an (ending)$"),
                                tag="seq-search-test3")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 1)
         for id in sections:
@@ -298,10 +293,8 @@ class TestSearchTools(TestSearchToolsBase):
                                body=SearchDef(r"value is (\S+)"),
                                end=SearchDef(r"^$"),
                                tag="seq-search-test4")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 1)
         for id in sections:
@@ -321,10 +314,8 @@ class TestSearchTools(TestSearchToolsBase):
                                body=SearchDef(r"value is (\S+)"),
                                end=SearchDef(r"^$"),
                                tag="seq-search-test5")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 2)
         for id in sections:
@@ -349,10 +340,8 @@ class TestSearchTools(TestSearchToolsBase):
         sd = SequenceSearchDef(start=SearchDef(r"^section (\d+)"),
                                body=SearchDef(r"\d_\d"),
                                tag="seq-search-test6")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 2)
         for id in sections:
@@ -380,10 +369,8 @@ class TestSearchTools(TestSearchToolsBase):
                                end=SearchDef(
                                            r"^section (\d+)"),
                                tag="seq-search-test7")
-        s.add_search_term(sd,
-                          path=os.path.join(self.data_root,
-                                            'atestfile'))
-        results = s.search()
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        results = s.run()
         sections = results.find_sequence_sections(sd)
         self.assertEqual(len(sections), 1)
         for id in sections:
@@ -413,9 +400,9 @@ class TestSearchTools(TestSearchToolsBase):
                                             r"^section\S+ (\d+)"),
                                 tag="seqB-search-test")
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sdA, path=fname)
-        s.add_search_term(sdB, path=fname)
-        results = s.search()
+        s.add(sdA, path=fname)
+        s.add(sdB, path=fname)
+        results = s.run()
         sections = results.find_sequence_sections(sdA)
         self.assertEqual(len(sections), 1)
         sections = results.find_sequence_sections(sdB)
@@ -435,8 +422,8 @@ class TestSearchTools(TestSearchToolsBase):
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L4'])
 
@@ -454,8 +441,8 @@ class TestSearchTools(TestSearchToolsBase):
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
                          ["L{}".format(i) for i in range(5)])
@@ -473,8 +460,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L2', 'L3', 'L4'])
 
@@ -491,8 +478,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
                          ["L{}".format(i) for i in range(5)])
@@ -510,8 +497,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], [])
 
@@ -528,8 +515,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
                          ["L{}".format(i) for i in range(5)])
@@ -547,8 +534,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
                          ["L{}".format(i) for i in range(5)])
@@ -566,8 +553,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L2', 'L3', 'L4'])
 
@@ -585,8 +572,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"(.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(1) for r in results], ['L0'])
 
@@ -606,8 +593,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"(.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(1) for r in results],
                          ["L{}".format(i) for i in range(9)])
@@ -625,8 +612,8 @@ class TestSearchTools(TestSearchToolsBase):
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L3', 'L4'])
 
@@ -644,8 +631,8 @@ class TestSearchTools(TestSearchToolsBase):
         sd = SearchDef(r"{}\S+ (.+)".format(datetime_expr), tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add_search_term(sd, path=fname)
-        results = s.search()
+        s.add(sd, path=fname)
+        results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L3', 'L4'])
 
