@@ -1,0 +1,4 @@
+flake8
+mock
+stestr
+pylint==2.8.3
