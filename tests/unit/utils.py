@@ -2,7 +2,7 @@ import os
 import unittest
 
 # disable debug for stestr otherwise output is much too verbose
-from searchtools.log import log, logging
+from searchkit.log import setup_logging, log, logging
 
 # Must be set prior to other imports
 TESTS_DIR = os.environ["TESTS_DIR"]
@@ -43,4 +43,4 @@ class BaseTestCase(unittest.TestCase):
 
     def setUp(self):
         self.maxDiff = None
-        log.setLevel(logging.INFO)
+        setup_logging(level=logging.INFO)

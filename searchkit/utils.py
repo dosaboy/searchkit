@@ -4,7 +4,7 @@ import pickle
 
 from functools import cached_property
 
-from searchtools.log import log
+from searchkit.log import log
 
 
 class MPCache(object):

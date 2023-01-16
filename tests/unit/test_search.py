@@ -1,5 +1,6 @@
 import glob
 import os
+import random
 import re
 import tempfile
 import shutil
@@ -8,16 +9,20 @@ import subprocess
 from unittest import mock
 
 from . import utils
-from searchtools.search import (
+from searchkit import (
     FileSearcher,
     SearchDef,
     SequenceSearchDef,
-    SearchResult,
 )
-from searchtools.constraints import (
-    BinarySearchState,
+from searchkit.search import (
+    LogrotateLogSort,
+    SearchResult,
+    SearchCatalog,
+)
+from searchkit.constraints import (
     SearchConstraintSearchSince,
 )
+
 
 SEQ_TEST_1 = """a start point
 leads to
@@ -101,7 +106,7 @@ blah 9
 """
 
 
-class TestSearchToolsBase(utils.BaseTestCase):
+class TestSearchKitBase(utils.BaseTestCase):
 
     def get_date(self, date):
         cmd = ["date", "--utc", "--date={}".format(date), "+%Y-%m-%d %H:%M:%S"]
@@ -121,7 +126,44 @@ class TestSearchToolsBase(utils.BaseTestCase):
         super().tearDown()
 
 
-class TestSearchTools(TestSearchToolsBase):
+class TestSearchKit(TestSearchKitBase):
+
+    def test_search(self):
+        seq = SequenceSearchDef(start=SearchDef(r'(HEADER)'),
+                                body=SearchDef(r'(\d+)'),
+                                end=SearchDef(r'(FOOTER)'),
+                                tag='myseq')
+        dtmp = tempfile.mkdtemp()
+        f = FileSearcher()
+        try:
+            for i in range(20):
+                fpath = os.path.join(dtmp, 'f{}'.format(i))
+                with open(fpath, 'w') as fd:
+                    fd.write('HEADER\n')
+                    for _ in range(1000):
+                        fd.write('{}\n'.format(random.randint(100, 10000000)))
+
+                    fd.write('FOOTER\n')
+
+                # simple search
+                f.add(SearchDef(r'(\d+)', tag='simple'), fpath)
+
+                # sequence search
+                f.add(seq, fpath)
+
+            results = f.run()
+        finally:
+            shutil.rmtree(dtmp)
+
+        self.assertEqual(len(results), 40040)
+        self.assertEqual(len(results.find_by_tag('simple')), 20000)
+        self.assertEqual(len(results.find_sequence_sections(seq)), 20)
+        for section in results.find_sequence_sections(seq).values():
+            for r in section:
+                if r.tag == seq.start_tag:
+                    self.assertEqual(r.get(1), 'HEADER')
+                elif r.tag == seq.end_tag:
+                    self.assertEqual(r.get(1), 'FOOTER')
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
@@ -172,13 +214,13 @@ class TestSearchTools(TestSearchToolsBase):
                 fname = "my-test-agent.log.{}.gz".format(i)
                 os.mknod(os.path.join(dtmp, fname))
                 ordered_contents.append(fname)
-                self.assertEqual(FileSearcher().logrotate_file_sort(fname), i)
+                self.assertEqual(LogrotateLogSort()(fname), i)
 
             ordered_contents.append("my-test-agent.log.tar.gz")
 
             contents = os.listdir(dtmp)
             self.assertEqual(sorted(contents,
-                                    key=FileSearcher().logrotate_file_sort),
+                                    key=LogrotateLogSort()),
                              ordered_contents)
 
     def test_filesearch_glob_filesort(self):
@@ -224,8 +266,9 @@ class TestSearchTools(TestSearchToolsBase):
 
             exp = sorted(dir_contents)
             path = os.path.join(dtmp, 'my-test-agent*.log*')
-            act = sorted(FileSearcher(max_logrotate_depth=max_logrotate_depth).
-                         filtered_paths(glob.glob(path)))
+            depth = max_logrotate_depth
+            act = sorted(SearchCatalog(max_logrotate_depth=depth).
+                         _filtered_dir(glob.glob(path)))
             self.assertEqual(act, exp)
 
     @utils.create_files({'atestfile': SEQ_TEST_1})
@@ -635,46 +678,3 @@ class TestSearchTools(TestSearchToolsBase):
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L3', 'L4'])
-
-
-class TestSearchUtils(TestSearchToolsBase):
-
-    @utils.create_files({'f1': LOGS_W_TS})
-    def test_binary_search(self):
-        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
-        _file = os.path.join(self.data_root, 'f1')
-        datetime_expr = r"^([\d-]+\s+[\d:]+)"
-        c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
-        with open(_file, 'rb') as fd:
-            self.assertEqual(c.apply_to_file(fd), 0)
-
-        c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
-        with open(_file, 'w') as fd:
-            fd.write('somejunk\n' + LOGS_W_TS)
-
-        with open(_file, 'rb') as fd:
-            self.assertEqual(c.apply_to_file(fd), 1)
-
-        c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
-        with open(_file, 'w') as fd:
-            fd.write('somejunk\n' * 499 + LOGS_W_TS)
-
-        with open(_file, 'rb') as fd:
-            offset = c.apply_to_file(fd)
-            self.assertEqual(offset, BinarySearchState.SKIP_MAX - 1)
-
-        c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
-        with open(_file, 'w') as fd:
-            fd.write('somejunk\n' * 500 + LOGS_W_TS)
-
-        with open(_file, 'rb') as fd:
-            offset = c.apply_to_file(fd)
-            self.assertEqual(offset, 0)

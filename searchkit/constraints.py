@@ -8,8 +8,8 @@ import uuid
 from datetime import datetime, timedelta
 from functools import cached_property
 
-from searchtools.utils import MPCache
-from searchtools.log import log
+from searchkit.utils import MPCache
+from searchkit.log import log
 
 
 class ConstraintBase(abc.ABC):
@@ -503,7 +503,8 @@ class BinarySeekSearchBase(ConstraintBase):
 
 class SearchConstraintSearchSince(BinarySeekSearchBase):
 
-    def __init__(self, current_date, cache_path, exprs=None, days=0, hours=24):
+    def __init__(self, current_date, cache_path, exprs=None, days=0, hours=24,
+                 **kwargs):
         """
         A search expression is provided that allows us to identify a datetime
         on each line and check whether it is within a given time period. The
@@ -519,7 +520,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         @param days: override default period with number of days
         @param hours: override default period with number of hours
         """
-        super().__init__()
+        super().__init__(**kwargs)
         self.cache_path = cache_path
         self.date_format = '%Y-%m-%d %H:%M:%S'
         self.current_date = datetime.strptime(current_date, self.date_format)

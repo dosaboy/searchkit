@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "searchkit"
+description = "Set of tools used to search files."
+requires-python = ">=3.8"
+version = "0.1.11"
+dependencies = [
+    'importlib-metadata; python_version >= "3.8"'
+]
+
