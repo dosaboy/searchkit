@@ -17,6 +17,7 @@ from searchkit.log import log
 
 RESULTS_QUEUES = {}
 RESULTS_QUEUE_TIMEOUT = 60
+MAX_QUEUE_RETRIES = 10
 
 
 class FileSearchException(Exception):
@@ -464,17 +465,31 @@ class SearchTask(object):
 
     def put_result(self, result):
         self.stats['results'] += 1
-        max_tries = 10
+        max_tries = MAX_QUEUE_RETRIES
         _queue = RESULTS_QUEUES[self.results_queue_id]
         while max_tries > 0:
             try:
-                _queue.put(result, timeout=RESULTS_QUEUE_TIMEOUT)
+                if max_tries == MAX_QUEUE_RETRIES:
+                    _queue.put_nowait(result)
+                else:
+                    _queue.put(result, timeout=RESULTS_QUEUE_TIMEOUT)
+
                 break
             except queue.Full:
-                log.debug("search task queue for '%s' is full even after "
-                          "waiting %ss - trying again", self.info['path'],
-                          RESULTS_QUEUE_TIMEOUT)
+                if max_tries == MAX_QUEUE_RETRIES:
+                    msg = ("search task queue for '%s' is full - switching "
+                           "to using blocking put with timeout")
+                    log.info(msg, self.info['path'])
+                else:
+                    msg = ("search task queue for '%s' is full even after "
+                           "waiting %ss - trying again")
+                    log.warning(msg, self.info['path'], RESULTS_QUEUE_TIMEOUT)
+
                 max_tries -= 1
+
+        if max_tries == 0:
+            log.error("exceeded max number of retries (%s) to put results "
+                      "data on the queue", MAX_QUEUE_RETRIES)
 
     def _simple_search(self, s_term, line, ln):
         """ Perform a simple search on line.
@@ -843,9 +858,9 @@ class FileSearcher(SearcherBase):
                     r = _queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
                     results.add(r)
                 except queue.Empty:
-                    log.debug("timeout waiting > %s secs to receive results - "
-                              "expected=%s, actual=%s", RESULTS_QUEUE_TIMEOUT,
-                              expected, len(results))
+                    log.info("timeout waiting > %s secs to receive results - "
+                             "expected=%s, actual=%s", RESULTS_QUEUE_TIMEOUT,
+                             expected, len(results))
             elif event:
                 if event.is_set():
                     log.debug("exiting results thread")
