@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "searchkit"
-description = "Set of tools used to search files."
+description = "Library provided tools used to search files concurrently."
 requires-python = ">=3.8"
+readme="README.md"
 version = "0.1.16"
 dependencies = [
     'importlib-metadata; python_version >= "3.8"',
