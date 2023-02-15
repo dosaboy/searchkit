@@ -215,7 +215,7 @@ class SeekInfo(object):
             cache_path = tempfile.mkdtemp()
 
         self.cache = MPCache('file_markers_{}'.format(self.fname_hash),
-                             'search_constraints', tmp_dir=cache_path)
+                             'search_constraints', cache_path)
 
     @cached_property
     def fname_hash(self):
