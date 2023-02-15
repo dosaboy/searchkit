@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "searchkit"
 description = "Set of tools used to search files."
 requires-python = ">=3.8"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
     'importlib-metadata; python_version >= "3.8"'
 ]
