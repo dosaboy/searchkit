@@ -56,12 +56,12 @@ class MPCache(object):
         path = os.path.join(self.global_path, 'caches', self.cache_type,
                             self.cache_id)
         with self._global_cache_lock:
-            if not os.path.isdir(os.path.dirname(path)):
-                if self.file_per_key:
-                    _dir = path
-                else:
-                    _dir = os.path.dirname(path)
+            if self.file_per_key:
+                _dir = path
+            else:
+                _dir = os.path.dirname(path)
 
+            if not os.path.isdir(_dir):
                 os.makedirs(_dir)
 
         return path
