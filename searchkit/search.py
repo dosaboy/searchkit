@@ -896,7 +896,9 @@ class FileSearcher(SearcherBase):
         jobs = []
         thread, event = self._start_results_thread(results, queue_id)
         with multiprocessing.Manager() as m:
-            lock = m.Lock()
+            # See https://github.com/PyCQA/pylint/issues/3313 on why we ignore
+            # the following pylint error
+            lock = m.Lock()  # pylint: disable=E1101
             try:
                 log.debug("starting queue consumer thread")
                 # make child processes ignore sigint so it can be handled here

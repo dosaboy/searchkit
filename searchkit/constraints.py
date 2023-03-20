@@ -314,6 +314,7 @@ class BinarySeekSearchBase(ConstraintBase):
     """
 
     def __init__(self, allow_constraints_for_unverifiable_logs=True):
+        self.fd_info = None
         self.allow_unverifiable_logs = allow_constraints_for_unverifiable_logs
 
     @abc.abstractmethod
@@ -324,6 +325,33 @@ class BinarySeekSearchBase(ConstraintBase):
 
         @param line: text line to extract a datetime from.
         """
+
+    @abc.abstractproperty
+    def _since_date(self):
+        """ A datetime.datetime object representing the "since" date/time """
+
+    def _line_date_is_valid(self, extracted_datetime):
+        """
+        Validate if the given line falls within the provided constraint. In
+        this case that's whether it has a datetime that is >= to the "since"
+        date.
+        """
+        ts = extracted_datetime
+        if ts is None:
+            # log.info("s:%s: failed to extract datetime from "
+            #          "using expressions %s - assuming line is not valid",
+            #          unique_search_id, ', '.join(self.exprs))
+            return False
+
+        if ts < self._since_date:
+            # log.debug("%s < %s at (%s) i.e. False", ts, self._since_date,
+            #           line[-3:].strip())
+            return False
+
+        # log.debug("%s >= %s at (%s) i.e. True", ts, self._since_date,
+        #           line[-3:].strip())
+
+        return True
 
     def _seek_and_validate(self, datetime_obj):
         """
@@ -524,7 +552,6 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         self.cache_path = cache_path
         self.date_format = '%Y-%m-%d %H:%M:%S'
         self.current_date = datetime.strptime(current_date, self.date_format)
-        self.fd_info = None
         self._line_pass = 0
         self._line_fail = 0
         self.exprs = exprs
@@ -575,7 +602,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         return self._since_date is not None
 
     @cached_property
-    def _since_date(self):
+    def _since_date(self):  # pylint: disable=W0236
         """
         Reflects the date from which we will start to apply searches.
         """
@@ -584,29 +611,6 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
 
         return self.current_date - timedelta(days=self.days,
                                              hours=self.hours or 0)
-
-    def _line_date_is_valid(self, extracted_datetime):
-        """
-        Validate if the given line falls within the provided constraint. In
-        this case that's whether it has a datetime that is >= to the "since"
-        date.
-        """
-        ts = extracted_datetime
-        if ts is None:
-            # log.info("s:%s: failed to extract datetime from "
-            #          "using expressions %s - assuming line is not valid",
-            #          unique_search_id, ', '.join(self.exprs))
-            return False
-
-        if ts < self._since_date:
-            # log.debug("%s < %s at (%s) i.e. False", ts, self._since_date,
-            #           line[-3:].strip())
-            return False
-
-        # log.debug("%s >= %s at (%s) i.e. True", ts, self._since_date,
-        #           line[-3:].strip())
-
-        return True
 
     def apply_to_line(self, line):
         if not self._is_valid:
