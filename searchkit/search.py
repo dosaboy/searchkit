@@ -3,6 +3,7 @@ import glob
 import gzip
 import multiprocessing
 import os
+import psutil
 import queue
 import re
 import signal
@@ -848,9 +849,43 @@ class FileSearcher(SearcherBase):
         """
         return self._stats
 
-    def _get_results(self, results, queue_id, expected=None, event=None):
+    def workers_all_alive(self, worker_pids):
+        """
+        Return True if all worker_pids processes exist otherwise False.
+        """
+        for pid in worker_pids:
+            try:
+                psutil.Process(pid)
+            except psutil.Error:
+                return False
+
+            if not psutil.pid_exists(pid):
+                return False
+
+        return True
+
+    def _get_results(self, results, queue_id, worker_pids, expected=None,
+                     event=None):
+        """
+        Collect results from all search task processes.
+
+        @param results: SearchResultsCollection object.
+        @param queue_id: id of results queue used for this search session.
+        @param worker_pids: list of pids of worker processes that must be
+                            alive for collection to complete.
+        @param expected: number of results we expect to receive. this is used
+                         to do a final sweep once all search tasks are complete
+                         to ensure all results have been collected.
+        @param event: event object used to notify this thread to stop.
+        """
         _queue = RESULTS_QUEUES[queue_id]
         while True:
+            if not self.workers_all_alive(worker_pids):
+                msg = ("one or more worker pids ({}) has died - no longer "
+                       "able to reliably collect results so exiting loop".
+                       format(worker_pids))
+                raise FileSearchException(msg)
+
             if not _queue.empty():
                 results.add(_queue.get())
             elif expected and expected > len(results):
@@ -871,18 +906,18 @@ class FileSearcher(SearcherBase):
             else:
                 break
 
-    def _start_results_thread(self, results, queue_id):
-        log.debug("starting results thread")
+    def _start_results_thread(self, results, queue_id, worker_pids):
+        log.debug("starting results queue consumer thread")
         event = threading.Event()
         event.clear()
         t = threading.Thread(target=self._get_results,
-                             args=[results, queue_id],
+                             args=[results, queue_id, worker_pids],
                              kwargs={'event': event}, daemon=False)
         t.start()
         return t, event
 
     def _stop_results_thread(self, thread, event):
-        log.debug("stopping results thread")
+        log.debug("joining/stopping queue consumer thread")
         event.set()
         thread.join()
 
@@ -894,17 +929,25 @@ class FileSearcher(SearcherBase):
         self.stats.reset()
         results = SearchResultsCollection(self.catalog)
         jobs = []
-        thread, event = self._start_results_thread(results, queue_id)
         with multiprocessing.Manager() as m:
+            mgr_pids = [c.pid for c in multiprocessing.active_children()]
             # See https://github.com/PyCQA/pylint/issues/3313 on why we ignore
             # the following pylint error
             lock = m.Lock()  # pylint: disable=E1101
+            results_thread = None
             try:
-                log.debug("starting queue consumer thread")
                 # make child processes ignore sigint so it can be handled here
                 orig_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
                 num_p_tasks = self.num_parallel_tasks
                 with multiprocessing.Pool(processes=num_p_tasks) as p:
+                    worker_pids = set([c.pid for c in
+                                       multiprocessing.active_children()])
+                    worker_pids = list(worker_pids.
+                                       symmetric_difference(mgr_pids))
+                    results_thread, event = self._start_results_thread(
+                                                                   results,
+                                                                   queue_id,
+                                                                   worker_pids)
                     # re-establish sigint
                     signal.signal(signal.SIGINT, orig_sigint)
                     for info in self.catalog:
@@ -918,6 +961,15 @@ class FileSearcher(SearcherBase):
                     log.debug("filesearcher: syncing %s jobs", len(jobs))
                     while len(jobs) > 0:
                         for i, j in enumerate(jobs):
+                            if not self.workers_all_alive(worker_pids):
+                                msg = ("one or more worker pids ({}) has died "
+                                       "- aborting search jobs".
+                                       format(worker_pids))
+                                # raising an exception this should result in
+                                # all pool workers being terminated so no need
+                                # to manually cleanup.
+                                raise FileSearchException(msg)
+
                             j.wait(10)
                             if j.ready():
                                 self.stats.combine(j.get())
@@ -926,14 +978,13 @@ class FileSearcher(SearcherBase):
                     log.debug("joining queue (expected=%s, remaining=%s)",
                               self.stats['results'],
                               self.stats['results'] - len(results))
-                    log.debug("joining queue consumer thread")
-                    self._stop_results_thread(thread, event)
-                    thread = None
-                    self._get_results(results, queue_id,
+                    self._stop_results_thread(results_thread, event)
+                    results_thread = None
+                    self._get_results(results, queue_id, worker_pids,
                                       expected=self.stats['results'])
             finally:
-                if thread is not None:
-                    self._stop_results_thread(thread, event)
+                if results_thread is not None:
+                    self._stop_results_thread(results_thread, event)
 
         log.debug("filesearcher: stats=%s", self.stats)
         log.debug("filesearcher: completed (results=%s)", len(results))
