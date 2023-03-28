@@ -18,6 +18,7 @@ from searchkit.search import (
     LogrotateLogSort,
     SearchResult,
     SearchCatalog,
+    SearchResultsCollection,
 )
 from searchkit.constraints import (
     SearchConstraintSearchSince,
@@ -128,37 +129,84 @@ class TestSearchKitBase(utils.BaseTestCase):
 
 class TestSearchKit(TestSearchKitBase):
 
-    def test_search(self):
+    def test_resultscollection(self):
+        catalog = SearchCatalog()
+        sd = SearchDef(r'.+ (\S+) \S+$')
+        catalog.register(sd, 'a/path')
+        results = SearchResultsCollection(catalog)
+        self.assertEqual(len(results), 0)
+        results.add(SearchResult(0, catalog._get_source_id('a/path'),
+                                 re.match(sd.patterns[0], '1 2 3')))
+        self.assertEqual(len(results), 1)
+        for path, _results in results.items():
+            self.assertEqual(path, 'a/path')
+            self.assertEqual(_results[0].get(1), '2')
+
+    def test_simple_search(self):
+        f = FileSearcher()
+        with tempfile.NamedTemporaryFile() as ftmp:
+            with open(ftmp.name, 'w') as fd:
+                fd.write("a key: some value\n")
+                fd.write("a key: another value\n")
+
+            f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), ftmp.name)
+            results = f.run()
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results.find_by_tag('simple')), 2)
+        for path, _results in results.items():
+            self.assertEqual(path, ftmp.name)
+            self.assertEqual(len(_results), 2)
+
+            self.assertEqual(len(_results[0]), 1)
+            self.assertEqual(len(_results[1]), 1)
+
+            self.assertEqual(repr(_results[0]), "ln:1 1='some'")
+            self.assertEqual(repr(_results[1]), "ln:2 1='another'")
+
+            self.assertEqual(_results[0].get(1), "some")
+            self.assertEqual(_results[1].get(1), "another")
+
+            # test iterating over results
+            for r in _results[0]:
+                self.assertEqual(r, "some")
+
+            for r in _results[1]:
+                self.assertEqual(r, "another")
+
+    def test_large_sequence_search(self):
         seq = SequenceSearchDef(start=SearchDef(r'(HEADER)'),
                                 body=SearchDef(r'(\d+)'),
                                 end=SearchDef(r'(FOOTER)'),
                                 tag='myseq')
-        dtmp = tempfile.mkdtemp()
+        simple = SearchDef(r'(\d+)', tag='simple')
         f = FileSearcher()
-        try:
-            for i in range(20):
-                fpath = os.path.join(dtmp, 'f{}'.format(i))
-                with open(fpath, 'w') as fd:
-                    fd.write('HEADER\n')
-                    for _ in range(1000):
-                        fd.write('{}\n'.format(random.randint(100, 10000000)))
+        with tempfile.TemporaryDirectory() as dtmp:
+            try:
+                for i in range(20):
+                    fpath = os.path.join(dtmp, 'f{}'.format(i))
+                    with open(fpath, 'w') as fd:
+                        fd.write('HEADER\n')
+                        for _ in range(1000):
+                            fd.write('{}\n'.format(random.randint(100,
+                                                                  10000000)))
 
-                    fd.write('FOOTER\n')
+                        fd.write('FOOTER\n')
 
-                # simple search
-                f.add(SearchDef(r'(\d+)', tag='simple'), fpath)
+                    # simple search
+                    f.add(simple, fpath)
 
-                # sequence search
-                f.add(seq, fpath)
+                    # sequence search
+                    f.add(seq, fpath)
 
-            results = f.run()
-        finally:
-            shutil.rmtree(dtmp)
+                results = f.run()
+            finally:
+                shutil.rmtree(dtmp)
 
         self.assertEqual(len(results), 40040)
         self.assertEqual(len(results.find_by_tag('simple')), 20000)
-        self.assertEqual(len(results.find_sequence_sections(seq)), 20)
-        for section in results.find_sequence_sections(seq).values():
+        self.assertEqual(len(results.find_sequence_by_tag('myseq')), 20)
+        for section in results.find_sequence_by_tag('myseq').values():
             for r in section:
                 if r.tag == seq.start_tag:
                     self.assertEqual(r.get(1), 'HEADER')
@@ -167,7 +215,7 @@ class TestSearchKit(TestSearchKitBase):
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_parallel_tasks_no_override(self, mock_cpu_count):
+    def test_num_parallel_tasks_no_override(self, mock_cpu_count):
         mock_cpu_count.return_value = 3
         with mock.patch.object(FileSearcher, 'files', range(4)):
             s = FileSearcher()
@@ -175,15 +223,14 @@ class TestSearchKit(TestSearchKitBase):
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_parallel_tasks_files_capped(self,
-                                                          mock_cpu_count):
+    def test_num_parallel_tasks_files_capped(self, mock_cpu_count):
         mock_cpu_count.return_value = 3
         with mock.patch.object(FileSearcher, 'files', range(2)):
             s = FileSearcher()
             self.assertEqual(s.num_parallel_tasks, 2)
 
     @mock.patch.object(os, "cpu_count")
-    def test_filesearcher_num_parallel_tasks_w_override(self, mock_cpu_count):
+    def test_num_parallel_tasks_w_override(self, mock_cpu_count):
         mock_cpu_count.return_value = 3
         with mock.patch.object(FileSearcher, 'files', range(4)):
             s = FileSearcher(max_parallel_tasks=2)
@@ -201,7 +248,7 @@ class TestSearchKit(TestSearchKitBase):
             s.add(SearchDef("."), path)
             s.run()
 
-    def test_filesearch_filesort(self):
+    def test_logrotatelogsort(self):
         ordered_contents = []
         with tempfile.TemporaryDirectory() as dtmp:
             os.mknod(os.path.join(dtmp, "my-test-agent.log"))
@@ -223,7 +270,7 @@ class TestSearchKit(TestSearchKitBase):
                                     key=LogrotateLogSort()),
                              ordered_contents)
 
-    def test_filesearch_glob_filesort(self):
+    def test_catalog_glob_filesort(self):
         dir_contents = []
         with tempfile.TemporaryDirectory() as dtmp:
             dir_contents.append(os.path.join(dtmp, "my-test-agent.0.log"))
@@ -281,7 +328,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test1")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test1')
         self.assertEqual(len(sections), 1)
         for id in sections:
             for r in sections[id]:
@@ -300,7 +347,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test2")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test2')
         self.assertEqual(len(sections), 1)
         for id in sections:
             for r in sections[id]:
@@ -319,7 +366,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test3")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test3')
         self.assertEqual(len(sections), 1)
         for id in sections:
             for r in sections[id]:
@@ -338,7 +385,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test4")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test4')
         self.assertEqual(len(sections), 1)
         for id in sections:
             for r in sections[id]:
@@ -359,7 +406,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test5")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test5')
         self.assertEqual(len(sections), 2)
         for id in sections:
             for r in sections[id]:
@@ -385,7 +432,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test6")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test6')
         self.assertEqual(len(sections), 2)
         for id in sections:
             for r in sections[id]:
@@ -414,7 +461,7 @@ class TestSearchKit(TestSearchKitBase):
                                tag="seq-search-test7")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
-        sections = results.find_sequence_sections(sd)
+        sections = results.find_sequence_by_tag('seq-search-test7')
         self.assertEqual(len(sections), 1)
         for id in sections:
             for r in sections[id]:
@@ -446,9 +493,9 @@ class TestSearchKit(TestSearchKitBase):
         s.add(sdA, path=fname)
         s.add(sdB, path=fname)
         results = s.run()
-        sections = results.find_sequence_sections(sdA)
+        sections = results.find_sequence_by_tag('seqA-search-test')
         self.assertEqual(len(sections), 1)
-        sections = results.find_sequence_sections(sdB)
+        sections = results.find_sequence_by_tag('seqB-search-test')
         self.assertEqual(len(sections), 2)
 
     @utils.create_files({'atestfile': LOGS_W_TS})
