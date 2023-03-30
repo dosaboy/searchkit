@@ -1,9 +1,9 @@
 import abc
+import concurrent.futures
 import glob
 import gzip
 import multiprocessing
 import os
-import psutil
 import queue
 import re
 import signal
@@ -549,6 +549,10 @@ class SearchTask(object):
         self.results_queue_id = results_queue_id
 
     @cached_property
+    def id(self):
+        return str(uuid.uuid4())
+
+    @cached_property
     def search_defs_conditional(self):
         return [s_term for s_term in self.info['searches']
                 if s_term.constraints]
@@ -949,30 +953,13 @@ class FileSearcher(SearcherBase):
         """
         return self._stats
 
-    def workers_all_alive(self, worker_pids):
-        """
-        Return True if all worker_pids processes exist otherwise False.
-        """
-        for pid in worker_pids:
-            try:
-                psutil.Process(pid)
-            except psutil.Error:
-                return False
-
-            if not psutil.pid_exists(pid):
-                return False
-
-        return True
-
-    def _get_results(self, results, queue_id, worker_pids, expected=None,
+    def _get_results(self, results, queue_id, expected=None,
                      event=None):
         """
         Collect results from all search task processes.
 
         @param results: SearchResultsCollection object.
         @param queue_id: id of results queue used for this search session.
-        @param worker_pids: list of pids of worker processes that must be
-                            alive for collection to complete.
         @param expected: number of results we expect to receive. this is used
                          to do a final sweep once all search tasks are complete
                          to ensure all results have been collected.
@@ -980,12 +967,6 @@ class FileSearcher(SearcherBase):
         """
         _queue = RESULTS_QUEUES[queue_id]
         while True:
-            if not self.workers_all_alive(worker_pids):
-                msg = ("one or more worker pids ({}) has died - no longer "
-                       "able to reliably collect results so exiting loop".
-                       format(worker_pids))
-                raise FileSearchException(msg)
-
             if not _queue.empty():
                 results.add(_queue.get())
             elif expected and expected > len(results):
@@ -1006,12 +987,12 @@ class FileSearcher(SearcherBase):
             else:
                 break
 
-    def _start_results_thread(self, results, queue_id, worker_pids):
+    def _start_results_thread(self, results, queue_id):
         log.debug("starting results queue consumer thread")
         event = threading.Event()
         event.clear()
         t = threading.Thread(target=self._get_results,
-                             args=[results, queue_id, worker_pids],
+                             args=[results, queue_id],
                              kwargs={'event': event}, daemon=False)
         t.start()
         return t, event
@@ -1028,9 +1009,8 @@ class FileSearcher(SearcherBase):
         """
         self.stats.reset()
         results = SearchResultsCollection(self.catalog)
-        jobs = []
+        jobs = {}
         with multiprocessing.Manager() as m:
-            mgr_pids = [c.pid for c in multiprocessing.active_children()]
             # See https://github.com/PyCQA/pylint/issues/3313 on why we ignore
             # the following pylint error
             lock = m.Lock()  # pylint: disable=E1101
@@ -1039,15 +1019,11 @@ class FileSearcher(SearcherBase):
                 # make child processes ignore sigint so it can be handled here
                 orig_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
                 num_p_tasks = self.num_parallel_tasks
-                with multiprocessing.Pool(processes=num_p_tasks) as p:
-                    worker_pids = set([c.pid for c in
-                                       multiprocessing.active_children()])
-                    worker_pids = list(worker_pids.
-                                       symmetric_difference(mgr_pids))
+                with concurrent.futures.ProcessPoolExecutor(
+                                        max_workers=num_p_tasks) as executor:
                     results_thread, event = self._start_results_thread(
                                                                    results,
-                                                                   queue_id,
-                                                                   worker_pids)
+                                                                   queue_id)
                     # re-establish sigint
                     signal.signal(signal.SIGINT, orig_sigint)
                     for info in self.catalog:
@@ -1055,33 +1031,23 @@ class FileSearcher(SearcherBase):
                         task = SearchTask(info, lock,
                                           constraints_manager=c_mgr,
                                           results_queue_id=queue_id)
-                        jobs.append(p.apply_async(task.execute,
-                                                  error_callback=task.failed))
+                        jobs[executor.submit(task.execute)] = task.id
 
                     log.debug("filesearcher: syncing %s jobs", len(jobs))
-                    while len(jobs) > 0:
-                        for i, j in enumerate(jobs):
-                            if not self.workers_all_alive(worker_pids):
-                                msg = ("one or more worker pids ({}) has died "
-                                       "- aborting search jobs".
-                                       format(worker_pids))
-                                # raising an exception this should result in
-                                # all pool workers being terminated so no need
-                                # to manually cleanup.
-                                raise FileSearchException(msg)
-
-                            if j.ready():
-                                self.stats.combine(j.get())
-                                jobs.pop(i)
-                            else:
-                                j.wait(1)
+                    try:
+                        for future in concurrent.futures.as_completed(jobs):
+                            self.stats.combine(future.result())
+                    except concurrent.futures.process.BrokenProcessPool as exc:
+                        msg = ("one or more worker processes has died - "
+                               "aborting search")
+                        raise FileSearchException(msg) from exc
 
                     log.debug("joining queue (expected=%s, remaining=%s)",
                               self.stats['results'],
                               self.stats['results'] - len(results))
                     self._stop_results_thread(results_thread, event)
                     results_thread = None
-                    self._get_results(results, queue_id, worker_pids,
+                    self._get_results(results, queue_id,
                                       expected=self.stats['results'])
             finally:
                 if results_thread is not None:
