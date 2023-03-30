@@ -45,7 +45,7 @@ class SearchDefBase(object):
 class SearchDef(SearchDefBase):
 
     def __init__(self, pattern, tag=None, hint=None,
-                 store_result_contents=True, **kwargs):
+                 store_result_contents=True, field_info=None, **kwargs):
         """
         Simple search definition.
 
@@ -58,6 +58,7 @@ class SearchDef(SearchDefBase):
                                       is saved but if it is not needed this
                                       can be set to False. This effectively
                                       makes the result True/False.
+        @param field_info: optional ResultFieldInfo object
         """
         if type(pattern) != list:
             self.patterns = [re.compile(pattern)]
@@ -68,6 +69,7 @@ class SearchDef(SearchDefBase):
 
         self.store_result_contents = store_result_contents
         self.tag = tag
+        self.field_info = field_info
         self.hint = hint
         if hint:
             self.hint = re.compile(hint)
@@ -220,9 +222,53 @@ class SequenceSearchResults(UserDict):
 
 class SearchResultPart(object):
 
-    def __init__(self, index, value):
+    def __init__(self, index, value, field_info=None):
+        """
+        @param index: index of this result
+        @param value: value of this result
+        @param field_info: ResultFieldInfo object
+        """
         self.index = index
         self.value = value
+        if field_info:
+            self.name = field_info.index_to_name(index - 1)
+            self.value = field_info.ensure_type(self.name, value)
+        else:
+            self.name = None
+
+
+class ResultFieldInfo(UserDict):
+
+    def __init__(self, fields):
+        """
+        @param fields: list or dictionary of field names. If a dictionary is
+                       provided, the values are expected to be functions that
+                       the field value will be cast to. In other words these
+                       should typically be standard or custom types.
+        """
+        if type(fields) == dict:
+            self.data = fields
+        else:
+            self.data = {f: None for f in fields}
+
+    def ensure_type(self, name, value):
+        """
+        If our fields have associated type functions, cast the value to
+        its expected type.
+        """
+        if name not in self.data or self.data[name] is None:
+            return value
+
+        return self.data[name](value)
+
+    def index_to_name(self, index):
+        """ Retrieve a field name using the result group index. """
+        for i, _field in enumerate(self.data):
+            if index == i:
+                return _field
+
+        raise FileSearchException("field with index {} not found in mapping".
+                                  format(index))
 
 
 class SearchResult(UserList):
@@ -247,6 +293,7 @@ class SearchResult(UserList):
         if self.sequence_def and sequence_section_id is None:
             raise FileSearchException("sequence section result saved "
                                       "but no section id provided")
+        self.field_info = search_def.field_info
 
         if not search_def.store_result_contents:
             log.debug("store_contents is False - skipping save")
@@ -276,13 +323,29 @@ class SearchResult(UserList):
         return id_string
 
     def _add(self, index, value):
-        self.data.append(SearchResultPart(index, value))
+        self.data.append(SearchResultPart(index, value, self.field_info))
 
-    def get(self, index):
-        """Retrieve result part value by index."""
+    def get(self, field):
+        """
+        Retrieve result part value by index or name.
+
+        @param field: integer index of string field name.
+        """
         for group in self.data:
-            if group.index == index:
-                return group.value
+            if type(field) == str:
+                if group.name == field:
+                    return group.value
+            else:
+                if group.index == field:
+                    return group.value
+
+    def __getattr__(self, name):
+        if name != 'field_info':
+            if self.field_info and name in self.field_info:
+                return self.get(name)
+
+        raise AttributeError("'{}' object has no attribute '{}'".
+                             format(self.__class__.__name__, name))
 
     def __iter__(self):
         """ Only return part values when iterating over this object. """
