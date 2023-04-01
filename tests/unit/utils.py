@@ -4,10 +4,6 @@ import unittest
 # disable debug for stestr otherwise output is much too verbose
 from searchkit.log import setup_logging, log, logging
 
-# Must be set prior to other imports
-TESTS_DIR = os.environ["TESTS_DIR"]
-DEFS_TESTS_DIR = os.path.join(os.environ['TESTS_DIR'], 'defs', 'tests')
-
 
 def create_files(files_to_create):
     """
@@ -43,4 +39,7 @@ class BaseTestCase(unittest.TestCase):
 
     def setUp(self):
         self.maxDiff = None
-        setup_logging(level=logging.INFO)
+        if os.environ.get('TESTS_LOG_LEVEL_DEBUG', 'no') == 'yes':
+            setup_logging(level=logging.DEBUG)
+        else:
+            setup_logging(level=logging.INFO)

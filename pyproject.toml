@@ -11,5 +11,4 @@ version = "0.1.19"
 dependencies = [
     'importlib-metadata; python_version >= "3.8"',
     'fasteners',
-    'psutil',
 ]

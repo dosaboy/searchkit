@@ -174,6 +174,48 @@ class TestSearchKit(TestSearchKitBase):
             for r in _results[1]:
                 self.assertEqual(r, "another")
 
+    def test_simple_search_zero_length_files_only(self):
+        f = FileSearcher()
+        with tempfile.TemporaryDirectory() as dtmp:
+            for i in range(30):
+                open(os.path.join(dtmp, str(i)), 'w').close()
+
+            f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
+            results = f.run()
+
+        self.assertEqual(len(results), 0)
+        self.assertEqual(len(results.find_by_tag('simple')), 0)
+
+    def test_simple_search_zero_length_files_mixed(self):
+        f = FileSearcher()
+        with tempfile.TemporaryDirectory() as dtmp:
+            for i in range(30):
+                open(os.path.join(dtmp, str(i)), 'w').close()
+
+            for i in range(30, 60):
+                with open(os.path.join(dtmp, str(i)), 'w') as fd:
+                    fd.write("a key: foo bar\n")
+
+            f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
+            results = f.run()
+
+        self.assertEqual(len(results), 30)
+        self.assertEqual(len(results.find_by_tag('simple')), 30)
+
+    def test_simple_search_many_files(self):
+        f = FileSearcher()
+        with tempfile.TemporaryDirectory() as dtmp:
+            for i in range(1000):
+                with open(os.path.join(dtmp, str(i)), 'w') as fd:
+                    fd.write("a key: foo bar\n")
+                    fd.write("a key: bar foo\n")
+
+            f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
+            results = f.run()
+
+        self.assertEqual(len(results), 2000)
+        self.assertEqual(len(results.find_by_tag('simple')), 2000)
+
     def test_large_sequence_search(self):
         seq = SequenceSearchDef(start=SearchDef(r'(HEADER)'),
                                 body=SearchDef(r'(\d+)'),

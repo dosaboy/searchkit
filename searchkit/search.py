@@ -1,12 +1,13 @@
 import abc
+import concurrent.futures
 import glob
 import gzip
 import multiprocessing
 import os
-import psutil
 import queue
 import re
 import signal
+import subprocess
 import threading
 import time
 import uuid
@@ -16,7 +17,6 @@ from collections import UserDict, UserList
 
 from searchkit.log import log
 
-RESULTS_QUEUES = {}
 RESULTS_QUEUE_TIMEOUT = 60
 MAX_QUEUE_RETRIES = 10
 
@@ -529,6 +529,13 @@ class SearchCatalog(object):
         self._source_ids[s_id] = path
         return s_id
 
+    def __len__(self):
+        items = 0
+        for user_path in self._user_paths:
+            items += len(self._expand_path(user_path))
+
+        return items
+
     def __iter__(self):
         for user_path, searches in self._user_paths.items():
             for path in self._expand_path(user_path):
@@ -541,12 +548,15 @@ class SearchCatalog(object):
 
 class SearchTask(object):
 
-    def __init__(self, info, lock, constraints_manager, results_queue_id):
+    def __init__(self, info, constraints_manager, results_queue):
         self.info = info
-        self.lock = lock
         self.stats = SearchTaskStats()
         self.constraints_manager = constraints_manager
-        self.results_queue_id = results_queue_id
+        self.results_queue = results_queue
+
+    @cached_property
+    def id(self):
+        return str(uuid.uuid4())
 
     @cached_property
     def search_defs_conditional(self):
@@ -565,13 +575,13 @@ class SearchTask(object):
     def put_result(self, result):
         self.stats['results'] += 1
         max_tries = MAX_QUEUE_RETRIES
-        _queue = RESULTS_QUEUES[self.results_queue_id]
         while max_tries > 0:
             try:
                 if max_tries == MAX_QUEUE_RETRIES:
-                    _queue.put_nowait(result)
+                    self.results_queue.put_nowait(result)
                 else:
-                    _queue.put(result, timeout=RESULTS_QUEUE_TIMEOUT)
+                    self.results_queue.put(result,
+                                           timeout=RESULTS_QUEUE_TIMEOUT)
 
                 break
             except queue.Full:
@@ -582,7 +592,8 @@ class SearchTask(object):
                 else:
                     msg = ("search task queue for '%s' is full even after "
                            "waiting %ss - trying again")
-                    log.warning(msg, self.info['path'], RESULTS_QUEUE_TIMEOUT)
+                    log.warning(msg, self.info['path'],
+                                RESULTS_QUEUE_TIMEOUT)
 
                 max_tries -= 1
 
@@ -751,6 +762,7 @@ class SearchTask(object):
 
             log.debug(msg)
 
+        log.debug("run search complete for path %s", fd.name)
         return self.stats
 
     def failed(self, exc):
@@ -759,24 +771,25 @@ class SearchTask(object):
                   self.info['path'], exc)
 
     def execute(self):
+        stats = SearchTaskStats()
         path = self.info['path']
         if os.path.getsize(path) == 0:
             log.debug("filesearcher: zero-length file %s - skipping search",
                       path)
-            return
+            return stats
 
+        log.debug("starting execution on path %s", path)
         try:
+            # first assume compressed then plain
             with gzip.open(path, 'rb') as fd:
                 try:
                     # test if file is gzip
                     fd.read(1)
                     fd.seek(0)
-                    return self._run_search(fd)
+                    stats = self._run_search(fd)
                 except OSError:
-                    pass
-
-            with open(path, 'rb') as fd:
-                return self._run_search(fd)
+                    with open(path, 'rb') as fd:
+                        stats = self._run_search(fd)
         except UnicodeDecodeError:
             log.exception("")
             # ignore the file if it can't be decoded
@@ -793,7 +806,8 @@ class SearchTask(object):
                    format(path, e))
             raise FileSearchException(msg) from e
 
-        return SearchTaskStats()
+        log.debug("finished execution on path %s", path)
+        return stats
 
 
 class SearchTaskStats(UserDict):
@@ -803,9 +817,11 @@ class SearchTaskStats(UserDict):
 
     def reset(self):
         self.data = {'lines_searched': 0,
+                     'jobs_completed': 0,
+                     'total_jobs': 0,
                      'results': 0}
 
-    def combine(self, stats):
+    def update(self, stats):
         if not stats:
             return
 
@@ -949,143 +965,169 @@ class FileSearcher(SearcherBase):
         """
         return self._stats
 
-    def workers_all_alive(self, worker_pids):
-        """
-        Return True if all worker_pids processes exist otherwise False.
-        """
-        for pid in worker_pids:
-            try:
-                psutil.Process(pid)
-            except psutil.Error:
-                return False
-
-            if not psutil.pid_exists(pid):
-                return False
-
-        return True
-
-    def _get_results(self, results, queue_id, worker_pids, expected=None,
-                     event=None):
+    def _get_results(self, results, queue, event, stats):
         """
         Collect results from all search task processes.
 
         @param results: SearchResultsCollection object.
-        @param queue_id: id of results queue used for this search session.
-        @param worker_pids: list of pids of worker processes that must be
-                            alive for collection to complete.
+        @param queue: results queue used for this search session.
+        @param event: event object used to notify this thread to stop.
+        @param stats: SearchTaskStats object
+        """
+        log.debug("fetching results from worker queues")
+
+        while True:
+            if not queue.empty():
+                results.add(queue.get())
+            elif event.is_set():
+                log.debug("exiting results thread")
+                break
+            else:
+                log.debug("total %s results received, %s/%s jobs completed - "
+                          "waiting for more", len(results),
+                          stats['jobs_completed'], stats['total_jobs'])
+                # yield
+                time.sleep(0.1)
+
+        log.debug("stopped fetching results (total received=%s)", len(results))
+
+    def _purge_results(self, results, queue, expected):
+        """
+        Purge results from all search task processes.
+
+        @param results: SearchResultsCollection object.
+        @param queue: results queue used for this search session.
         @param expected: number of results we expect to receive. this is used
                          to do a final sweep once all search tasks are complete
                          to ensure all results have been collected.
-        @param event: event object used to notify this thread to stop.
         """
-        _queue = RESULTS_QUEUES[queue_id]
-        while True:
-            if not self.workers_all_alive(worker_pids):
-                msg = ("one or more worker pids ({}) has died - no longer "
-                       "able to reliably collect results so exiting loop".
-                       format(worker_pids))
-                raise FileSearchException(msg)
+        log.debug("purging results (expected=%s)", expected)
 
-            if not _queue.empty():
-                results.add(_queue.get())
-            elif expected and expected > len(results):
+        while True:
+            if not queue.empty():
+                results.add(queue.get())
+            elif expected > len(results):
                 try:
-                    r = _queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
+                    r = queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
                     results.add(r)
                 except queue.Empty:
                     log.info("timeout waiting > %s secs to receive results - "
                              "expected=%s, actual=%s", RESULTS_QUEUE_TIMEOUT,
                              expected, len(results))
-            elif event:
-                if event.is_set():
-                    log.debug("exiting results thread")
-                    break
-
-                # yield
-                time.sleep(0)
             else:
                 break
 
-    def _start_results_thread(self, results, queue_id, worker_pids):
-        log.debug("starting results queue consumer thread")
+        log.debug("stopped purging results (total received=%s)",
+                  len(results))
+
+    def _create_results_thread(self, results, queue, stats):
+        log.debug("creating results queue consumer thread")
         event = threading.Event()
         event.clear()
         t = threading.Thread(target=self._get_results,
-                             args=[results, queue_id, worker_pids],
-                             kwargs={'event': event}, daemon=False)
-        t.start()
+                             args=[results, queue, event, stats])
         return t, event
 
     def _stop_results_thread(self, thread, event):
         log.debug("joining/stopping queue consumer thread")
         event.set()
         thread.join()
+        log.debug("consumer thread stopped successfully")
 
-    def _run(self, queue_id):
+    def _ensure_worker_processes_killed(self):
+        """
+        For some reason it is sometimes possible to for pool termination to
+        hang indefinitely because one or more worker process fails to
+        terminate. This method ensures that all extant worker child processes
+        are killed so that pool termination is guaranteed to complete.
+        """
+        log.debug("ensuring all pool workers killed")
+        worker_pids = []
+        for child in multiprocessing.active_children():
+            if type(child) == multiprocessing.context.ForkProcess:
+                if 'ForkProcess' in child.name:
+                    worker_pids.append(child.pid)
+
+        ps_out = subprocess.check_output(['ps', '-opid', '--no-headers',
+                                          '--ppid',
+                                          str(os.getpid())], encoding='utf8')
+        child_pids = [int(line.strip()) for line in ps_out.splitlines()]
+        log.debug("process has child pids: %s", child_pids)
+        for wpid in worker_pids:
+            if int(wpid) not in child_pids:
+                log.error("worker pid %s no longer a child of this process "
+                          "(%s)", wpid, os.getpid())
+                continue
+
+            try:
+                log.debug('sending SIGKILL to worker process %s', wpid)
+                os.kill(wpid, signal.SIGILL)
+            except Exception:
+                log.debug('worker process %s already killed', wpid)
+
+    def _run(self, mgr):
         """ Run all searches.
 
+        @param mgr: multiprocessing.Manager object
         @return: SearchResultsCollection object
         """
         self.stats.reset()
         results = SearchResultsCollection(self.catalog)
-        jobs = []
-        with multiprocessing.Manager() as m:
-            mgr_pids = [c.pid for c in multiprocessing.active_children()]
-            # See https://github.com/PyCQA/pylint/issues/3313 on why we ignore
-            # the following pylint error
-            lock = m.Lock()  # pylint: disable=E1101
-            results_thread = None
-            try:
-                # make child processes ignore sigint so it can be handled here
-                orig_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
-                num_p_tasks = self.num_parallel_tasks
-                with multiprocessing.Pool(processes=num_p_tasks) as p:
-                    worker_pids = set([c.pid for c in
-                                       multiprocessing.active_children()])
-                    worker_pids = list(worker_pids.
-                                       symmetric_difference(mgr_pids))
-                    results_thread, event = self._start_results_thread(
-                                                                   results,
-                                                                   queue_id,
-                                                                   worker_pids)
-                    # re-establish sigint
-                    signal.signal(signal.SIGINT, orig_sigint)
-                    for info in self.catalog:
-                        c_mgr = self.constraints_manager
-                        task = SearchTask(info, lock,
-                                          constraints_manager=c_mgr,
-                                          results_queue_id=queue_id)
-                        jobs.append(p.apply_async(task.execute,
-                                                  error_callback=task.failed))
+        if len(self.catalog) == 0:
+            log.debug("catalog is empty - nothing to run")
+            return results
 
-                    log.debug("filesearcher: syncing %s jobs", len(jobs))
-                    while len(jobs) > 0:
-                        for i, j in enumerate(jobs):
-                            if not self.workers_all_alive(worker_pids):
-                                msg = ("one or more worker pids ({}) has died "
-                                       "- aborting search jobs".
-                                       format(worker_pids))
-                                # raising an exception this should result in
-                                # all pool workers being terminated so no need
-                                # to manually cleanup.
-                                raise FileSearchException(msg)
+        queue = mgr.Queue()
+        results_thread, event = self._create_results_thread(results, queue,
+                                                            self.stats)
+        results_thread_started = False
+        try:
+            num_workers = self.num_parallel_tasks
+            with concurrent.futures.ProcessPoolExecutor(
+                                    max_workers=num_workers) as executor:
+                jobs = {}
+                for info in self.catalog:
+                    c_mgr = self.constraints_manager
+                    task = SearchTask(info,
+                                      constraints_manager=c_mgr,
+                                      results_queue=queue)
+                    job = executor.submit(task.execute)
+                    jobs[job] = info['path']
+                    self.stats['total_jobs'] += 1
 
-                            if j.ready():
-                                self.stats.combine(j.get())
-                                jobs.pop(i)
-                            else:
-                                j.wait(1)
+                log.debug("filesearcher: syncing %s job(s)", len(jobs))
+                results_thread.start()
+                results_thread_started = True
+                try:
+                    for future in concurrent.futures.as_completed(jobs):
+                        self.stats.update(future.result())
+                        self.stats['jobs_completed'] += 1
+                except concurrent.futures.process.BrokenProcessPool as exc:
+                    msg = ("one or more worker processes has died - "
+                           "aborting search")
+                    raise FileSearchException(msg) from exc
 
-                    log.debug("joining queue (expected=%s, remaining=%s)",
-                              self.stats['results'],
-                              self.stats['results'] - len(results))
-                    self._stop_results_thread(results_thread, event)
-                    results_thread = None
-                    self._get_results(results, queue_id, worker_pids,
-                                      expected=self.stats['results'])
-            finally:
-                if results_thread is not None:
-                    self._stop_results_thread(results_thread, event)
+                log.debug("all workers synced")
+                # double check nothing is running anymore
+                for job, path in jobs.items():
+                    log.debug("worker for path '%s' has state: %s", path,
+                              repr(job))
+                    if job.running():
+                        log.info("job for path '%s' still running when "
+                                 "not expected to be", path)
+
+                self._stop_results_thread(results_thread, event)
+                results_thread = None
+                log.debug("purging remaining results (expected=%s, "
+                          "remaining=%s)", self.stats['results'],
+                          self.stats['results'] - len(results))
+                self._purge_results(results, queue, self.stats['results'])
+
+                self._ensure_worker_processes_killed()
+                log.debug("terminating pool")
+        finally:
+            if results_thread is not None and results_thread_started:
+                self._stop_results_thread(results_thread, event)
 
         log.debug("filesearcher: stats=%s", self.stats)
         log.debug("filesearcher: completed (results=%s)", len(results))
@@ -1096,13 +1138,6 @@ class FileSearcher(SearcherBase):
 
         @return: SearchResultsCollection object
         """
-        queue_id = "{}:{}".format(os.getpid(), uuid.uuid4())
-        if queue_id in RESULTS_QUEUES:
-            raise Exception("results queue already exists with id {}".
-                            format(queue_id))
-
-        RESULTS_QUEUES[queue_id] = multiprocessing.Queue()
-        try:
-            return self._run(queue_id)
-        finally:
-            del RESULTS_QUEUES[queue_id]
+        log.debug("filesearcher: starting")
+        with multiprocessing.Manager() as mgr:
+            return self._run(mgr)
