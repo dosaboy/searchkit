@@ -335,8 +335,8 @@ class SearchResultsCollection(UserDict):
     def find_sequence_by_tag(self, tag, path=None):
         """ Find results for the sequence search(es) identified from tag.
 
-        Returns a list of "sections" i.e. complete sequences matched using
-        associated SequenceSearchDef objects. Each section is a list of
+        Returns a dictionary of "sections" i.e. complete sequences matched
+        using associated SequenceSearchDef objects. Each section is a list of
         SearchResult objects representing start/body/end for that section.
 
         @param tag: tag used to identify sequence results.
@@ -351,9 +351,9 @@ class SearchResultsCollection(UserDict):
     def find_sequence_sections(self, sequence_obj, path=None):
         """ Find results for the given sequence search.
 
-        Returns a list of "sections" i.e. complete sequences matched using
-        the associated SequenceSearchDef object. Each section is a list of
-        SearchResult objects representing start/body/end for that section.
+        Returns a dictionary of "sections" i.e. complete sequences matched
+        using the associated SequenceSearchDef object. Each section is a list
+        of SearchResult objects representing start/body/end for that section.
 
         @param sequence_obj: SequenceSearch object
         @param path: optionally filter results for a given path.
