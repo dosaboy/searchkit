@@ -136,7 +136,8 @@ class TestSearchKit(TestSearchKitBase):
         results = SearchResultsCollection(catalog)
         self.assertEqual(len(results), 0)
         results.add(SearchResult(0, catalog._get_source_id('a/path'),
-                                 re.match(sd.patterns[0], '1 2 3')))
+                                 re.match(sd.patterns[0], '1 2 3'),
+                                 search_def=sd))
         self.assertEqual(len(results), 1)
         for path, _results in results.items():
             self.assertEqual(path, 'a/path')
@@ -161,8 +162,10 @@ class TestSearchKit(TestSearchKitBase):
             self.assertEqual(len(_results[0]), 1)
             self.assertEqual(len(_results[1]), 1)
 
-            self.assertEqual(repr(_results[0]), "ln:1 1='some'")
-            self.assertEqual(repr(_results[1]), "ln:2 1='another'")
+            self.assertEqual(repr(_results[0]),
+                             "ln:1 1='some' (section=None)")
+            self.assertEqual(repr(_results[1]),
+                             "ln:2 1='another' (section=None)")
 
             self.assertEqual(_results[0].get(1), "some")
             self.assertEqual(_results[1].get(1), "another")
@@ -254,6 +257,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), 'HEADER')
                 elif r.tag == seq.end_tag:
                     self.assertEqual(r.get(1), 'FOOTER')
+                elif r.tag != seq.body_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
@@ -378,6 +383,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), "start")
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
+                elif r.tag != sd.body_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_2})
     def test_sequence_searcher_overlapping(self):
@@ -397,6 +404,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
+                elif r.tag != sd.body_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_3})
     def test_sequence_searcher_overlapping_incomplete(self):
@@ -416,6 +425,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
+                elif r.tag != sd.body_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_4})
     def test_sequence_searcher_incomplete_eof_match(self):
@@ -437,6 +448,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), "3")
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(0), "")
+                else:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_5})
     def test_sequence_searcher_multiple_sections(self):
@@ -458,6 +471,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertTrue(r.get(1) in ["3", "4"])
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(0), "")
+                else:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_6})
     def test_sequence_searcher_eof(self):
@@ -486,6 +501,8 @@ class TestSearchKit(TestSearchKitBase):
                         self.assertTrue(r.get(0) in ["1_1", "1_2"])
                     else:
                         self.assertTrue(r.get(0) in ["2_1"])
+                elif r.tag != sd.end_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': SEQ_TEST_7})
     def test_sequence_searcher_section_start_end_same(self):
@@ -498,8 +515,7 @@ class TestSearchKit(TestSearchKitBase):
         s = FileSearcher()
         sd = SequenceSearchDef(start=SearchDef(r"^section (2)"),
                                body=SearchDef(r"\d_\d"),
-                               end=SearchDef(
-                                           r"^section (\d+)"),
+                               end=SearchDef(r"^section (\d+)"),
                                tag="seq-search-test7")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
         results = s.run()
@@ -511,6 +527,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), "2")
                 elif r.tag == sd.body_tag:
                     self.assertTrue(r.get(0) in ["2_1"])
+                elif r.tag != sd.end_tag:
+                    raise Exception("error - tag is '{}'".format(r.tag))
 
     @utils.create_files({'atestfile': MULTI_SEQ_TEST})
     def test_sequence_searcher_multi_sequence(self):

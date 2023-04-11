@@ -72,8 +72,21 @@ class SearchDef(SearchDefBase):
         if hint:
             self.hint = re.compile(hint)
 
+        self.sequence_def = None
+
         # do this last
         super().__init__(**kwargs)
+
+    def link_to_sequence(self, sequence_def, tag):
+        """
+        If this search definition is part of a sequence, the parent
+        SequenceSearchDef must link itself to this object.
+
+        @param sequence_def: SequenceSearchDef object
+        @param tag: SequenceSearchDef object tag for this section def
+        """
+        self.sequence_def = sequence_def
+        self.tag = tag
 
     def run(self, line):
         """ Execute search patterns against line and return first match. """
@@ -109,15 +122,24 @@ class SequenceSearchDef(SearchDefBase):
         @param end: optional SearchDef object for matching end
         @param body: optional SearchDef object for matching body
         """
+        self.tag = tag
         self.s_start = start
         self.s_end = end
         self.s_body = body
-        self.tag = tag
+
+        # make sure section defs have tags synced with this object
+        for sd, _tag in {start: self.start_tag,
+                         end: self.end_tag,
+                         body: self.body_tag}.items():
+            if sd:
+                sd.link_to_sequence(self, _tag)
+
         self._mark = None
         # Each section matched gets its own id. Since each file is processed
         # using a separate process and memory is not shared, these values must
         # be unique to avoid collisions when results are aggregated.
         self._section_id = None
+        self.completed_sections = []
         # do this last
         super().__init__(**kwargs)
 
@@ -137,7 +159,7 @@ class SequenceSearchDef(SearchDefBase):
         return "{}-body".format(self.tag)
 
     @property
-    def section_id(self):
+    def current_section_id(self):
         """ ID of current section. A new id should be set after each
         completed section. """
         return self._section_id
@@ -150,6 +172,9 @@ class SequenceSearchDef(SearchDefBase):
     def start(self):
         """ Indicate that a sequence start has been detected. """
         self._section_id = str(uuid.uuid4())
+        log.debug("sequence %s started section %s (completed=%s)",
+                  self.id, self.current_section_id,
+                  len(self.completed_sections))
         self._mark = 1
 
     def reset(self):
@@ -161,7 +186,19 @@ class SequenceSearchDef(SearchDefBase):
     def stop(self):
         """ Indicate that a sequence is complete. """
         self._mark = 0
+        if self.current_section_id is None:
+            raise FileSearchException("sequence section id is None")
+
+        self.completed_sections.append(self.current_section_id)
+        log.debug("sequence %s stopping section %s (completed=%s)",
+                  self.id, self.current_section_id,
+                  len(self.completed_sections))
         self._section_id = str(uuid.uuid4())
+
+    def __repr__(self):
+        return ("{}: current_section={}, started={}, completed_sections={}".
+                format(self.__class__.__name__, self.current_section_id,
+                       self.started, self.completed_sections))
 
 
 class SequenceSearchResults(UserDict):
@@ -170,7 +207,7 @@ class SequenceSearchResults(UserDict):
         self.data = {}
 
     def add(self, result):
-        id = result.sequence_obj_id
+        id = result.sequence_def.id
         if id in self.data:
             self.data[id].append(result)
         else:
@@ -190,25 +227,28 @@ class SearchResultPart(object):
 
 class SearchResult(UserList):
 
-    def __init__(self, linenumber, source_id, result, tag=None,
-                 section_id=None, sequence_obj_id=None, store_contents=True):
+    def __init__(self, linenumber, source_id, result, search_def,
+                 sequence_section_id=None):
         """
         @param linenumber: line number that produced a match.
         @param source_id: data source id - resolves to a path in the
                           SearchCatalog.
         @param result: python.re.match object.
-        @param tag: SearchDef object tag.
-        @param section_id: SequenceSearchDef object section id.
-        @param sequence_obj_id: SequenceSearchDef object unique id.
+        @param search_def: SearchDef object.
+        @param sequence_section_id: if this result is part of a sequence the
+                                    section ID must be provided.
         """
         self.data = []
-        self.tag = tag
-        self.source_id = source_id
         self.linenumber = linenumber
-        self.sequence_obj_id = sequence_obj_id
-        self.section_id = section_id
+        self.source_id = source_id
+        self.tag = search_def.tag
+        self.section_id = sequence_section_id
+        self.sequence_def = search_def.sequence_def
+        if self.sequence_def and sequence_section_id is None:
+            raise FileSearchException("sequence section result saved "
+                                      "but no section id provided")
 
-        if not store_contents:
+        if not search_def.store_result_contents:
             log.debug("store_contents is False - skipping save")
             return
 
@@ -229,8 +269,9 @@ class SearchResult(UserList):
         """ Unique Result ID """
         id_string = "{}-{}-{}".format(uuid.uuid4(), self.source_id,
                                       self.linenumber)
-        if self.sequence_obj_id:
-            id_string = "{}-{}-{}".format(id_string, self.sequence_obj_id,
+        if self.sequence_def:
+            id_string = "{}-{}-{}".format(id_string,
+                                          self.sequence_def.id,
                                           self.section_id)
         return id_string
 
@@ -250,7 +291,9 @@ class SearchResult(UserList):
 
     def __repr__(self):
         r_list = ["{}='{}'".format(rp.index, rp.value) for rp in self.data]
-        return "ln:{} {}".format(self.linenumber, ", ".join(r_list))
+        return ("ln:{} {} (section={})".
+                format(self.linenumber, ", ".join(r_list),
+                       self.section_id))
 
 
 class SearchResultsCollection(UserDict):
@@ -296,8 +339,6 @@ class SearchResultsCollection(UserDict):
         @param tag: tag used to identify search results.
         @param path: optional path used to filter results to only include those
                      matched from a given path.
-        @param sequence_obj_id: optionally provide sequence object id to only
-                                match sequence results.
         """
         if path:
             paths = [path]
@@ -327,8 +368,10 @@ class SearchResultsCollection(UserDict):
         sequences = []
         for path in paths:
             for result in self.find_by_path(path):
-                if result.sequence_obj_id is not None:
-                    sequences.append(result.id)
+                if result.sequence_def is None:
+                    continue
+
+                sequences.append(result.id)
 
         return sequences
 
@@ -361,7 +404,7 @@ class SearchResultsCollection(UserDict):
         _results = {}
         for r in self._get_all_sequence_results(path=path):
             result = self._results_by_id[r]
-            s_id = result.sequence_obj_id
+            s_id = result.sequence_def.id
             if s_id != sequence_obj.id:
                 continue
 
@@ -560,15 +603,15 @@ class SearchTask(object):
 
     @cached_property
     def search_defs_conditional(self):
-        return [s_term for s_term in self.info['searches']
-                if s_term.constraints]
+        return [s_def for s_def in self.info['searches']
+                if s_def.constraints]
 
     @cached_property
     def search_defs(self):
-        all = {s_term: True for s_term in self.info['searches']}
-        for s_term in all:
-            if s_term in self.search_defs_conditional:
-                all[s_term] = False
+        all = {s_def: True for s_def in self.info['searches']}
+        for s_def in all:
+            if s_def in self.search_defs_conditional:
+                all[s_def] = False
 
         return all
 
@@ -601,68 +644,67 @@ class SearchTask(object):
             log.error("exceeded max number of retries (%s) to put results "
                       "data on the queue", MAX_QUEUE_RETRIES)
 
-    def _simple_search(self, s_term, line, ln):
+    def _simple_search(self, search_def, line, ln):
         """ Perform a simple search on line.
 
-        @param s_term: SearchDef object
+        @param search_def: SearchDef object
         @param line: current line (string)
         @param ln: current line number
         """
-        ret = s_term.run(line)
+        ret = search_def.run(line)
         if not ret:
             return
 
-        self.put_result(SearchResult(
-                            ln, self.info['source_id'], ret, s_term.tag,
-                            store_contents=s_term.store_result_contents))
+        self.put_result(SearchResult(ln, self.info['source_id'], ret,
+                                     search_def))
 
-    def _sequence_search(self, s_term, line, ln, sequence_results):
+    def _sequence_search(self, seq_def, line, ln, sequence_results):
         """ Perform a sequence search on line.
 
-        @param s_term: SequenceSearchDef object
+        @param seq_def: SequenceSearchDef object
         @param line: current line (string)
         @param ln: current line number
         @param sequence_results: SequenceSearchResults object
         """
-        ret = s_term.s_start.run(line)
+        ret = seq_def.s_start.run(line)
         # if the ending is defined and we match a start while
         # already in a section, we start again.
-        if s_term.s_end and s_term.started:
+        if seq_def.s_end and seq_def.started:
             if ret:
                 # reset and start again
-                sequence_results.remove(s_term.id)
-                s_term.reset()
+                sequence_results.remove(seq_def.id)
+                seq_def.reset()
             else:
-                ret = s_term.s_end.run(line)
+                ret = seq_def.s_end.run(line)
 
         if ret:
-            tag = s_term.tag
-            if not s_term.started:
-                tag = s_term.start_tag
-                s_term.start()
-                section_id = s_term.section_id
+            if not seq_def.started:
+                s_term = seq_def.s_start
+                seq_def.start()
+                section_id = seq_def.current_section_id
             else:
-                tag = s_term.end_tag
-                section_id = s_term.section_id
-                s_term.stop()
+                s_term = seq_def.s_end
+                section_id = seq_def.current_section_id
+                seq_def.stop()
                 # if no end is defined then we don't bother storing
                 # the result, just complete the section and start
                 # the next.
-                if s_term.s_end is None:
-                    tag = s_term.start_tag
-                    s_term.start()
-                    section_id = s_term.section_id
+                if seq_def.s_end is None:
+                    s_term = seq_def.s_start
+                    seq_def.start()
+                    section_id = seq_def.current_section_id
 
             sequence_results.add(SearchResult(ln, self.info['source_id'], ret,
-                                              tag, section_id=section_id,
-                                              sequence_obj_id=s_term.id))
-        elif s_term.started and s_term.s_body:
-            ret = s_term.s_body.run(line)
+                                              s_term,
+                                              sequence_section_id=section_id))
+        elif seq_def.started and seq_def.s_body:
+            section_id = seq_def.current_section_id
+            ret = seq_def.s_body.run(line)
             if ret:
-                sequence_results.add(SearchResult(ln, self.info['source_id'],
-                                                  ret, s_term.body_tag,
-                                                  section_id=s_term.section_id,
-                                                  sequence_obj_id=s_term.id))
+                sequence_results.add(SearchResult(
+                                            ln, self.info['source_id'],
+                                            ret, seq_def.s_body,
+                                            sequence_section_id=section_id))
 
     def _process_sequence_results(self, sequence_results, current_ln):
         """
@@ -676,43 +718,44 @@ class SearchTask(object):
         # matches an empty string. If s_end is not defined we just go ahead
         # and complete the section.
         filter_section_id = {}
-        for s_term in self.search_defs:
-            if type(s_term) == SequenceSearchDef:
-                if s_term.started:
-                    if s_term.s_end is None:
-                        s_term.stop()
-                    else:
-                        ret = s_term.s_end.run("")
-                        if ret:
-                            section_id = s_term.section_id
-                            s_term.stop()
-                            tag = s_term.end_tag
-                            r = SearchResult(current_ln + 1,
-                                             self.info['source_id'], ret,
-                                             tag,
-                                             section_id=section_id,
-                                             sequence_obj_id=s_term.id)
-                            sequence_results.add(r)
-                        else:
-                            if s_term.id not in filter_section_id:
-                                filter_section_id[s_term.id] = []
+        for s_def in self.search_defs:
+            if type(s_def) != SequenceSearchDef:
+                continue
 
-                            filter_section_id[s_term.id].append(
-                                s_term.section_id)
+            seq_def = s_def
+            if not seq_def.started:
+                continue
+
+            if seq_def.s_end is None:
+                continue
+
+            ret = seq_def.s_end.run('')
+            if ret:
+                section_id = seq_def.current_section_id
+                r = SearchResult(current_ln + 1, self.info['source_id'], ret,
+                                 seq_def.s_end, sequence_section_id=section_id)
+                sequence_results.add(r)
+            else:
+                if seq_def.id not in filter_section_id:
+                    filter_section_id[seq_def.id] = []
+
+                filter_section_id[seq_def.id].append(
+                    seq_def.current_section_id)
 
         if len(sequence_results) < 1:
             log.debug("no sequence results to process")
             return
 
+        log.debug("filtering sections: %s", filter_section_id)
         # Now add sequence results to main results list, excluding any
         # incomplete sections.
         for s_results in sequence_results.values():
             for r in s_results:
                 if filter_section_id:
-                    if r.sequence_obj_id is None:
+                    if r.sequence_def is None:
                         continue
 
-                    seq_id = r.sequence_obj_id
+                    seq_id = r.sequence_def.id
                     if seq_id in filter_section_id:
                         if r.section_id in filter_section_id[seq_id]:
                             continue
@@ -738,18 +781,18 @@ class SearchTask(object):
             if type(line) == bytes:
                 line = line.decode("utf-8")
 
-            for s_term in self.search_defs:
-                if not runnable[s_term.id]:
-                    if not self.constraints_manager.apply_single(s_term, line):
+            for s_def in self.search_defs:
+                if not runnable[s_def.id]:
+                    if not self.constraints_manager.apply_single(s_def, line):
                         continue
 
                     # enable from here on in
-                    runnable[s_term.id] = True
+                    runnable[s_def.id] = True
 
-                if type(s_term) == SequenceSearchDef:
-                    self._sequence_search(s_term, line, ln, sequence_results)
+                if type(s_def) == SequenceSearchDef:
+                    self._sequence_search(s_def, line, ln, sequence_results)
                 else:
-                    self._simple_search(s_term, line, ln)
+                    self._simple_search(s_def, line, ln)
 
         self._process_sequence_results(sequence_results, ln)
         log.debug("completed search of %s lines", self.stats['lines_searched'])
