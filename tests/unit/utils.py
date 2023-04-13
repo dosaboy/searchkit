@@ -27,8 +27,8 @@ def create_files(files_to_create):
                 with open(path, 'w') as fd:
                     fd.write(content)
 
-                ret = f(self, *args, **kwargs)
-                return ret
+            ret = f(self, *args, **kwargs)
+            return ret
 
         return create_files_inner2
 

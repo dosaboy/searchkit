@@ -1171,18 +1171,26 @@ class FileSearcher(SearcherBase):
             except Exception:
                 log.debug('worker process %s already killed', wpid)
 
-    def _run(self, mgr):
-        """ Run all searches.
+    def _run_single(self, results):
+        """ Run a single search using this process.
+
+        @param results: SearchResultsCollection object
+        """
+        queue = multiprocessing.Queue()
+        for info in self.catalog:
+            task = SearchTask(info,
+                              constraints_manager=self.constraints_manager,
+                              results_queue=queue)
+            self.stats.update(task.execute())
+
+        self._purge_results(results, queue, self.stats['results'])
+
+    def _run_mp(self, mgr, results):
+        """ Run searches in parallel.
 
         @param mgr: multiprocessing.Manager object
-        @return: SearchResultsCollection object
+        @param results: SearchResultsCollection object
         """
-        self.stats.reset()
-        results = SearchResultsCollection(self.catalog)
-        if len(self.catalog) == 0:
-            log.debug("catalog is empty - nothing to run")
-            return results
-
         queue = mgr.Queue()
         results_thread, event = self._create_results_thread(results, queue,
                                                             self.stats)
@@ -1237,7 +1245,6 @@ class FileSearcher(SearcherBase):
 
         log.debug("filesearcher: stats=%s", self.stats)
         log.debug("filesearcher: completed (results=%s)", len(results))
-        return results
 
     def run(self):
         """ Run all searches.
@@ -1245,5 +1252,18 @@ class FileSearcher(SearcherBase):
         @return: SearchResultsCollection object
         """
         log.debug("filesearcher: starting")
-        with multiprocessing.Manager() as mgr:
-            return self._run(mgr)
+        self.stats.reset()
+        results = SearchResultsCollection(self.catalog)
+        if len(self.catalog) == 0:
+            log.debug("catalog is empty - nothing to run")
+            return results
+
+        if len(self.files) > 1:
+            log.debug("running searches (parallel=True)")
+            with multiprocessing.Manager() as mgr:
+                self._run_mp(mgr, results)
+        else:
+            log.debug("running searches (parallel=False)")
+            self._run_single(results)
+
+        return results

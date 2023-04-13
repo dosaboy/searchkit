@@ -146,37 +146,40 @@ class TestSearchKit(TestSearchKitBase):
 
     def test_simple_search(self):
         f = FileSearcher()
-        with tempfile.NamedTemporaryFile() as ftmp:
-            with open(ftmp.name, 'w') as fd:
-                fd.write("a key: some value\n")
-                fd.write("a key: another value\n")
+        with tempfile.TemporaryDirectory() as dtmp:
+            fpaths = [os.path.join(dtmp, fname) for fname in ['f1', 'f2']]
+            for fpath in fpaths:
+                with open(fpath, 'w') as fd:
+                    fd.write("a key: some value\n")
+                    fd.write("a key: another value\n")
 
-            f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), ftmp.name)
+                    f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), fpath)
+
             results = f.run()
 
-        self.assertEqual(len(results), 2)
-        self.assertEqual(len(results.find_by_tag('simple')), 2)
-        for path, _results in results.items():
-            self.assertEqual(path, ftmp.name)
-            self.assertEqual(len(_results), 2)
+            self.assertEqual(len(results), 4)
+            self.assertEqual(len(results.find_by_tag('simple')), 4)
+            for path, _results in results.items():
+                self.assertTrue(path in fpaths)
+                self.assertEqual(len(_results), 2)
 
-            self.assertEqual(len(_results[0]), 1)
-            self.assertEqual(len(_results[1]), 1)
+                self.assertEqual(len(_results[0]), 1)
+                self.assertEqual(len(_results[1]), 1)
 
-            self.assertEqual(repr(_results[0]),
-                             "ln:1 1='some' (section=None)")
-            self.assertEqual(repr(_results[1]),
-                             "ln:2 1='another' (section=None)")
+                self.assertEqual(repr(_results[0]),
+                                 "ln:1 1='some' (section=None)")
+                self.assertEqual(repr(_results[1]),
+                                 "ln:2 1='another' (section=None)")
 
-            self.assertEqual(_results[0].get(1), "some")
-            self.assertEqual(_results[1].get(1), "another")
+                self.assertEqual(_results[0].get(1), "some")
+                self.assertEqual(_results[1].get(1), "another")
 
-            # test iterating over results
-            for r in _results[0]:
-                self.assertEqual(r, "some")
+                # test iterating over results
+                for r in _results[0]:
+                    self.assertEqual(r, "some")
 
-            for r in _results[1]:
-                self.assertEqual(r, "another")
+                for r in _results[1]:
+                    self.assertEqual(r, "another")
 
     def test_simple_search_zero_length_files_only(self):
         f = FileSearcher()
@@ -434,8 +437,12 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag != sd.body_tag:
                     raise Exception("error - tag is '{}'".format(r.tag))
 
-    @utils.create_files({'atestfile': SEQ_TEST_2})
+    @utils.create_files({'atestfile': SEQ_TEST_2,
+                         'atestfile2': SEQ_TEST_2})
     def test_sequence_searcher_overlapping(self):
+        """
+        NOTE: tests searches in parallel.
+        """
         s = FileSearcher()
         sd = SequenceSearchDef(start=SearchDef(
                                            r"^(a\S*) (start\S*) point\S*"),
@@ -443,9 +450,10 @@ class TestSearchKit(TestSearchKitBase):
                                end=SearchDef(r"^an (ending)$"),
                                tag="seq-search-test2")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile2'))
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test2')
-        self.assertEqual(len(sections), 1)
+        self.assertEqual(len(sections), 2)
         for id in sections:
             for r in sections[id]:
                 if r.tag == sd.start_tag:
@@ -455,8 +463,12 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag != sd.body_tag:
                     raise Exception("error - tag is '{}'".format(r.tag))
 
-    @utils.create_files({'atestfile': SEQ_TEST_3})
+    @utils.create_files({'atestfile': SEQ_TEST_3,
+                         'atestfile2': SEQ_TEST_3})
     def test_sequence_searcher_overlapping_incomplete(self):
+        """
+        NOTE: tests searches in parallel.
+        """
         s = FileSearcher()
         sd = SequenceSearchDef(start=SearchDef(
                                            r"^(a\S*) (start\S*) point\S*"),
@@ -464,9 +476,10 @@ class TestSearchKit(TestSearchKitBase):
                                end=SearchDef(r"^an (ending)$"),
                                tag="seq-search-test3")
         s.add(sd, path=os.path.join(self.data_root, 'atestfile'))
+        s.add(sd, path=os.path.join(self.data_root, 'atestfile2'))
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test3')
-        self.assertEqual(len(sections), 1)
+        self.assertEqual(len(sections), 2)
         for id in sections:
             for r in sections[id]:
                 if r.tag == sd.start_tag:
