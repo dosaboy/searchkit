@@ -77,7 +77,12 @@ class MPCache(object):
             return
 
         with open(path, 'rb') as fd:
-            contents = pickle.load(fd)
+            try:
+                contents = pickle.load(fd)
+            except Exception:
+                log.exception("failed to load contents from cache '%s'", path)
+                contents = None
+
             if not contents:
                 return
 
@@ -130,7 +135,11 @@ class MPCache(object):
                           len(contents))
 
             with open(path, 'wb') as fd:
-                pickle.dump(contents, fd)
+                try:
+                    pickle.dump(contents, fd)
+                except Exception:
+                    log.exception("failed to save contents to cache '%s'",
+                                  path)
 
             log.debug("cache id=%s size=%s", self.cache_id,
                       os.path.getsize(path))
