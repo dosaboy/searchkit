@@ -7,7 +7,7 @@ name = "searchkit"
 description = "Python library providing tools to search files in parallel."
 requires-python = ">=3.8"
 readme="README.md"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
     'importlib-metadata; python_version >= "3.8"',
     'fasteners',
