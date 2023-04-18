@@ -230,7 +230,7 @@ class SearchResultPart(object):
         """
         self.index = index
         self.value = value
-        if field_info:
+        if field_info and value is not None:
             self.name = field_info.index_to_name(index - 1)
             self.value = field_info.ensure_type(self.name, value)
         else:
