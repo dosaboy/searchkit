@@ -246,7 +246,7 @@ class ResultFieldInfo(UserDict):
                        the field value will be cast to. In other words these
                        should typically be standard or custom types.
         """
-        if type(fields) == dict:
+        if issubclass(fields.__class__, dict):
             self.data = fields
         else:
             self.data = {f: None for f in fields}

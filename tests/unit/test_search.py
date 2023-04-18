@@ -6,18 +6,20 @@ import tempfile
 import shutil
 import subprocess
 
+from collections import OrderedDict
+
 from unittest import mock
 
 from . import utils
 from searchkit import (
     FileSearcher,
+    ResultFieldInfo,
     SearchDef,
     SequenceSearchDef,
 )
 from searchkit.search import (
     LogrotateLogSort,
     SearchResult,
-    ResultFieldInfo,
     SearchCatalog,
     SearchResultsCollection,
 )
@@ -256,6 +258,33 @@ class TestSearchKit(TestSearchKitBase):
 
             fields = ResultFieldInfo({'PID': int, 'TTY': str, 'TIME': str,
                                       'CMD': str})
+            self.assertEqual(set(fields.values()), set([str, int]))
+            f.add(SearchDef(r'\s*(\d+)\s+(\S+)\s+([0-9:]+)\s+(\S+)',
+                            tag='simple', field_info=fields), ftmp.name)
+            results = f.run()
+
+            self.assertEqual(len(results), 2)
+            self.assertEqual(len(results.find_by_tag('simple')), 2)
+            self.assertEqual(len(results.find_by_path(fd.name)), 2)
+            for r in results.find_by_tag('simple'):
+                for pid, tty, time, cmd in [r, (r.PID, r.TTY, r.TIME, r.CMD)]:
+                    self.assertTrue(pid in [49606, 49613])
+                    self.assertEqual(tty, 'pts/2')
+                    self.assertEqual(time, '00:00:00')
+                    self.assertTrue(cmd in ['bash', 'ps'])
+
+    def test_simple_search_named_fields_w_types_orderered_dict(self):
+        f = FileSearcher()
+        with tempfile.NamedTemporaryFile() as ftmp:
+            with open(ftmp.name, 'w') as fd:
+                fd.write("  PID TTY          TIME CMD\n"
+                         "49606 pts/2    00:00:00 bash\n"
+                         "49613 pts/2    00:00:00 ps\n")
+
+            fields = ResultFieldInfo(OrderedDict({'PID': int, 'TTY': str,
+                                                  'TIME': str,
+                                                  'CMD': str}))
+            self.assertEqual(set(fields.values()), set([str, int]))
             f.add(SearchDef(r'\s*(\d+)\s+(\S+)\s+([0-9:]+)\s+(\S+)',
                             tag='simple', field_info=fields), ftmp.name)
             results = f.run()
