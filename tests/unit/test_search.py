@@ -1,6 +1,5 @@
 import glob
 import os
-import random
 import re
 import tempfile
 import shutil
@@ -22,6 +21,7 @@ from searchkit.search import (
     SearchResult,
     SearchCatalog,
     SearchResultsCollection,
+    ResultStoreSimple,
 )
 from searchkit.constraints import (
     SearchConstraintSearchSince,
@@ -136,11 +136,12 @@ class TestSearchKit(TestSearchKitBase):
         catalog = SearchCatalog()
         sd = SearchDef(r'.+ (\S+) \S+$')
         catalog.register(sd, 'a/path')
-        results = SearchResultsCollection(catalog)
+        rs = ResultStoreSimple()
+        results = SearchResultsCollection(catalog, rs)
         self.assertEqual(len(results), 0)
         results.add(SearchResult(0, catalog._get_source_id('a/path'),
                                  re.match(sd.patterns[0], '1 2 3'),
-                                 search_def=sd))
+                                 search_def=sd, results_store=rs).export)
         self.assertEqual(len(results), 1)
         for path, _results in results.items():
             self.assertEqual(path, 'a/path')
@@ -313,8 +314,8 @@ class TestSearchKit(TestSearchKitBase):
                     with open(fpath, 'w') as fd:
                         fd.write('HEADER\n')
                         for _ in range(1000):
-                            fd.write('{}\n'.format(random.randint(100,
-                                                                  10000000)))
+                            # this should be almost 100% deduped
+                            fd.write('{}\n'.format(1234))
 
                         fd.write('FOOTER\n')
 
@@ -328,6 +329,8 @@ class TestSearchKit(TestSearchKitBase):
             finally:
                 shutil.rmtree(dtmp)
 
+            self.assertEqual(f.stats['num_deduped'], 40037)
+
         self.assertEqual(len(results), 40040)
         self.assertEqual(len(results.find_by_tag('simple')), 20000)
         self.assertEqual(len(results.find_sequence_by_tag('myseq')), 20)
@@ -339,6 +342,8 @@ class TestSearchKit(TestSearchKitBase):
                     self.assertEqual(r.get(1), 'FOOTER')
                 elif r.tag != seq.body_tag:
                     raise Exception("error - tag is '{}'".format(r.tag))
+                else:
+                    self.assertEqual(r.get(1), '1234')
 
     @mock.patch.object(os, "environ", {})
     @mock.patch.object(os, "cpu_count")
@@ -875,3 +880,15 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L3', 'L4'])
+
+    def test_search_result_index(self):
+        sri = ResultStoreSimple()
+        for val in ['foo', 'bar', 'foo']:
+            sri.add(val)
+
+        self.assertEqual(sri, {0: 'foo', 1: 'bar'})
+        self.assertEqual(sri.meta, {0: 2, 1: 1})
+        self.assertEqual(sri[0], 'foo')
+        self.assertEqual(sri.get(1), 'bar')
+        self.assertEqual(sri.get(2), None)
+        self.assertEqual(sri.num_deduped, 1)

@@ -1,10 +1,9 @@
 import os
 import tempfile
 
-from unittest import mock
+from searchkit.utils import MPCache
 
 from . import utils
-from searchkit.utils import MPCache
 
 
 class TestUtils(utils.BaseTestCase):
@@ -34,13 +33,3 @@ class TestUtils(utils.BaseTestCase):
             self.assertEqual(cache.get('key1'), 'value1')
             self.assertEqual(cache.get('key2'), 'value2')
             self.assertEqual(cache.get('key3'), None)
-
-    # suppress exception output
-    @mock.patch('searchkit.utils.log.exception', lambda *args: None)
-    @mock.patch('pickle.dump')
-    def test_mpcache_fail(self, mock_dump):
-        mock_dump.side_effect = Exception
-        with tempfile.TemporaryDirectory() as dtmp:
-            cache = MPCache('testtype', 'testcache', dtmp)
-            cache.set('key1', 'value1')
-            self.assertEqual(cache.get('key1'), None)

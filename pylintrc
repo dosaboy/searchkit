@@ -45,7 +45,6 @@ disable=
  abstract-method,
  no-else-return,
  no-self-use,
- simplifiable-if-statement,
  broad-except,
  trailing-comma-tuple,
  redefined-outer-name,

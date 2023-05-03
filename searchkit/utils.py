@@ -1,6 +1,6 @@
 import fasteners
 import os
-import pickle
+import shelve
 
 from functools import cached_property
 
@@ -66,7 +66,7 @@ class MPCache(object):
 
         return path
 
-    def _get_unsafe(self, path):
+    def _get_unsafe(self, key, path):
         """
         Unlocked get not to be used without having first acquired the lock.
 
@@ -76,17 +76,8 @@ class MPCache(object):
             log.debug("no cache found at '%s'", path)
             return
 
-        with open(path, 'rb') as fd:
-            try:
-                contents = pickle.load(fd)
-            except Exception:
-                log.exception("failed to load contents from cache '%s'", path)
-                contents = None
-
-            if not contents:
-                return
-
-            return contents
+        with shelve.open(path) as db:
+            return db.get(key)
 
     def get(self, key):
         """
@@ -99,11 +90,17 @@ class MPCache(object):
         with self._cache_lock:
             log.debug("load from cache '%s' (key='%s')", path, key)
             if self.file_per_key:
-                return self._get_unsafe(os.path.join(path, key))
+                return self._get_unsafe('0', os.path.join(path, key))
 
-            contents = self._get_unsafe(path)
-            if contents:
-                return contents.get(key)
+            return self._get_unsafe(key, path)
+
+    def _set_unsafe(self, path, key, value):
+        if self.file_per_key:
+            path = os.path.join(path, key)
+            key = '0'
+
+        with shelve.open(path) as db:
+            db[key] = value
 
     def set(self, key, value):
         """
@@ -120,26 +117,8 @@ class MPCache(object):
             return
 
         with self._cache_lock:
-            if self.file_per_key:
-                path = os.path.join(path, key)
-                log.debug("saving to cache '%s' (key=%s)", path, key)
-                contents = value
-            else:
-                contents = self._get_unsafe(path)
-                if contents:
-                    contents[key] = value
-                else:
-                    contents = {key: value}
+            log.debug("saving to cache '%s' (key=%s)", path, key)
+            self._set_unsafe(path, key, value)
 
-                log.debug("saving to cache '%s' (key=%s, items=%s)", path, key,
-                          len(contents))
-
-            with open(path, 'wb') as fd:
-                try:
-                    pickle.dump(contents, fd)
-                except Exception:
-                    log.exception("failed to save contents to cache '%s'",
-                                  path)
-
-            log.debug("cache id=%s size=%s", self.cache_id,
-                      os.path.getsize(path))
+        log.debug("cache id=%s size=%s", self.cache_id,
+                  os.path.getsize(path))
