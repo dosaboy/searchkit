@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta
 from functools import cached_property
 
-from searchkit.utils import MPCache
+from searchkit.utils import MPCacheSharded
 from searchkit.log import log
 
 
@@ -201,6 +201,159 @@ class BinarySearchState(object):
                 self.rc))
 
 
+class FileMarkers(object):
+    INDEX_FSIZE_LIMIT = (1024 ** 3) * 10
+    SYNC_LIMIT = 100000
+    # NOTE: chunk much contain a newline
+    BLOCK_SIZE_BASE = 4096
+    CHUNK_SIZE = BLOCK_SIZE_BASE * 64
+
+    def __init__(self, fd, eof_pos, cache_path=None):
+        """
+        Index start position for every line in file. Starts at current
+        position and is non-destructive i.e. original position is
+        restored.
+
+        This is an expensive operation and we only want to do it once per
+        file/path so the results are cached on disk and loaded when needed.
+
+        NOTE: this is only safe to use if the file does not change between
+              calls.
+        """
+        if cache_path is None:
+            self.cache_path = tempfile.mkdtemp()
+            log.debug("cache path not provided to filemarkers so using a "
+                      "custom one (%s)", self.cache_path)
+        else:
+            self.cache_path = cache_path
+
+        self.fd = fd
+        self.file_path = self.fd.name
+        hash = self._fname_hash(self.file_path)
+        mtimesize = self._fmtime_size(self.file_path)
+        self.cache_id = 'file_markers_{}_{}'.format(hash, mtimesize)
+        self.cache_type = 'search_constraints'
+        self.orig_pos = self.fd.tell()
+        self.eof_pos = eof_pos
+        self._primed = False
+        self._num_lines = None
+        self.chunk_size = self.CHUNK_SIZE
+
+    def _do_chunk(self, cache, chunk, current_position, marker):
+        if (self.fd.tell() < self.eof_pos) and '\n' not in chunk:
+            log.warning("no newline found in chunk len=%s starting at "
+                        "%s - increasing chunksize by %s bytes and "
+                        "trying again", self.chunk_size, current_position,
+                        self.BLOCK_SIZE_BASE)
+            self.chunk_size += self.BLOCK_SIZE_BASE
+            self.fd.seek(current_position)
+            return -1, marker
+
+        markers = {}
+        chunkpos = 0
+        while True:
+            n = chunk[chunkpos:].find('\n')
+            if n == -1:
+                break
+
+            chunkpos += n + 1
+            if current_position + chunkpos == self.eof_pos:
+                # don't save eof
+                break
+
+            marker += 1
+            markers[marker] = current_position + chunkpos
+            if marker % self.SYNC_LIMIT == 0:
+                log.debug("indexed {0:.2f}% of file".format(
+                          (100 / self._num_lines) * marker))
+
+        cache.bulk_set(markers)
+        return chunkpos, marker
+
+    def _prime(self):
+        self.fd.seek(self.orig_pos)
+        self._num_lines = sum(1 for i in self.fd)
+        self.fd.seek(self.orig_pos)
+        log.debug("priming index cache for file %s in %s (numlines=%s)",
+                  self.file_path,
+                  self.cache_path, self._num_lines)
+        with MPCacheSharded(self.cache_id, self.cache_type,
+                            self.cache_path) as cache:
+            if cache.get(self._num_lines - 1) is not None:
+                log.debug("using existing file index from cache.")
+                self._primed = True
+                return
+
+            main_marker = 0
+            main_pos = self.orig_pos
+            cache.set(main_marker, self.orig_pos)
+            remainder = ''
+            for chunk in self._readchunk(self.fd):
+                if remainder != '':
+                    chunk = remainder + chunk
+
+                chunk_pos, main_marker = self._do_chunk(cache, chunk, main_pos,
+                                                        main_marker)
+                if chunk_pos >= 0:
+                    remainder = chunk[chunk_pos:]
+                    main_pos += chunk_pos
+                else:
+                    # this implies we are going around again
+                    remainder = ''
+
+        self.fd.seek(self.orig_pos)
+        log.debug("finished creating index. (lines=%s)", self._num_lines)
+        self._primed = True
+
+    def _fname_hash(self, path):
+        hash = hashlib.sha256()
+        hash.update(path.encode('utf-8'))
+        return hash.hexdigest()
+
+    def _fmtime_size(self, path):
+        """
+        Criteria used to determine if file contents changed since markers were
+        last generated.
+        """
+        if not os.path.exists(path):
+            return 0
+
+        mtime = os.path.getmtime(path)
+        size = os.path.getsize(path)
+        return "{}+{}".format(mtime, size)
+
+    def _readchunk(self, fd):
+        while True:
+            data = fd.read(self.chunk_size).decode()
+            if data == '':
+                break
+
+            yield data
+
+    def __getitem__(self, key):
+        if not self._primed:
+            self._prime()
+
+        with MPCacheSharded(self.cache_id, self.cache_type,
+                            self.cache_path) as cache:
+            return cache.get(key)
+
+    def __iter__(self):
+        if not self._primed:
+            self._prime()
+
+        with MPCacheSharded(self.cache_id, self.cache_type,
+                            self.cache_path) as cache:
+            for value in sorted(cache):
+                yield value
+
+    def __len__(self):
+        if not self._primed:
+            self._prime()
+
+        return self._num_lines
+
+
 class SeekInfo(object):
 
     def __init__(self, fd, cache_path=None):
@@ -211,75 +364,7 @@ class SeekInfo(object):
         self.fd = fd
         self.iterations = 0
         self._orig_pos = self.fd.tell()
-        if cache_path is None:
-            cache_path = tempfile.mkdtemp()
-
-        self.cache = MPCache('file_markers_{}'.format(self.fname_hash),
-                             'search_constraints', cache_path)
-
-    @cached_property
-    def fname_hash(self):
-        hash = hashlib.sha256()
-        hash.update(self.fd.name.encode('utf-8'))
-        return hash.hexdigest()
-
-    @property
-    def fmtime_size(self):
-        """
-        Criteria used to determine if file contents changed since markers were
-        last generated.
-        """
-        if not os.path.exists(self.fd.name):
-            return 0
-
-        mtime = os.path.getmtime(self.fd.name)
-        size = os.path.getsize(self.fd.name)
-        return "{}+{}".format(mtime, size)
-
-    @cached_property
-    def markers(self):
-        """
-        Creates a list of positions of each start of line. Starts at current
-        position in the file and is non-destructive i.e. original position is
-        restored.
-
-        Since this is an expensive operation we only want to do it once per
-        file/path so the results are cached on disk and loaded when needed.
-
-        NOTE: this is only safe to use if the file does not change between
-              calls.
-        """
-        log.debug("loading markers for '%s'", self.fd.name)
-        fname = self.fd.name
-        fmtime_size = self.fmtime_size
-        if fmtime_size:
-            cached = self.cache.get(fmtime_size)
-            if cached:
-                log.debug("finished loading markers for '%s' with mtime %s",
-                          fname, fmtime_size)
-                return cached
-
-        log.debug("no cached markers for '%s' - generating new set",
-                  self.fd.name)
-
-        self.fd.seek(self.orig_pos)
-        _markers = [self.fd.tell()]
-        for _ in self.fd:
-            _markers.append(self.fd.tell())
-
-        # pop EOF
-        _markers.pop()
-
-        # restore
-        self.fd.seek(self.orig_pos)
-        if fmtime_size:
-            self.cache.set(fmtime_size, _markers)
-        else:
-            log.warning("not caching markers for file '%s' since mtime not "
-                        "valid", self.fd.name)
-
-        log.debug("finished loading markers for '%s'", fname)
-        return _markers
+        self.markers = FileMarkers(fd, self.eof_pos, cache_path)
 
     @cached_property
     def eof_pos(self):
@@ -459,7 +544,6 @@ class BinarySeekSearchBase(ConstraintBase):
 
         # check first line before going ahead with full search which requires
         # generating file markers that is expensive for large files.
-        search_state.next_pos = search_state.cur_pos + 1
         if self._check_line(search_state) == search_state.next_pos:
             self.fd_info.reset()
             log.debug("first line is valid so assuming same for rest of "
@@ -471,9 +555,16 @@ class BinarySeekSearchBase(ConstraintBase):
 
             return offset
 
+        log.debug("first line is not valid - checking rest of file")
+        self.fd_info.reset()
         search_state.start()
-        if len(self.fd_info.markers) > 0:
+        num_lines = len(self.fd_info.markers)
+        if num_lines > 0:
             while True:
+                if search_state.cur_ln >= num_lines:
+                    log.debug("reached eof - no more lines to check")
+                    break
+
                 self.fd_info.iterations += 1
                 search_state = self._seek_next(search_state)
                 if search_state.rc == search_state.RC_ERROR:
@@ -595,6 +686,8 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         try:
             return datetime.strptime(str_date, self.date_format)
         except ValueError:
+            # this can happen if the line is incomplete or does not contain a
+            # timestamp.
             log.exception("")
 
     @property
@@ -638,13 +731,20 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
                         fd.name)
             return
 
+        # indexing files larger than this takes too long and is too resource
+        # intensive so best to fall back to per-line check.
+        if os.path.getsize(fd.name) >= FileMarkers.INDEX_FSIZE_LIMIT:
+            log.debug("s:%s: file %s too big to perform binary search - "
+                      "skipping", self.id, fd.name)
+            return
+
         if fd.name in self._results:
             return self._results[fd.name]
 
-        log.debug("s:%s: starting binary seek search to %s in file %s "
+        log.debug("c:%s: starting binary seek search to %s in file %s "
                   "(destructive=True)", self.id, self._since_date, fd.name)
         self._results[fd.name] = self._seek_to_first_valid(destructive)
-        log.debug("s:%s: finished binary seek search in file %s", self.id,
+        log.debug("c:%s: finished binary seek search in file %s", self.id,
                   fd.name)
         return self._results[fd.name]
 

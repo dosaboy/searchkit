@@ -1,124 +1,198 @@
+import abc
 import fasteners
 import os
 import shelve
+import _gdbm
 
+from contextlib import ContextDecorator
 from functools import cached_property
 
 from searchkit.log import log
 
 
-class MPCache(object):
+class MPCacheBase(ContextDecorator):
     """
-    A multiprocessing safe cache.
+    A multiprocessing safe key/value store cache.
 
     Saves data to disk and coordinates access using a lock that exists in a
-    path that much be global to all process using this cache. Cache content is
-    structured as a dictionary and content is pickled before saving to disk.
+    path that must be global to all process using this cache.
     """
-    def __init__(self, cache_id, cache_type, global_path,
-                 use_single_file=False):
+    def __init__(self, cache_id, cache_type, global_path):
         """
         @param cache_id: A unique name for this cache.
         @param cache_type: A name given to this type of cache.
         @param global_path: Path shared across all processes using this cache.
-        @param use_single_file: By default each key is stored as its own file
-                                but if this is set to True a single file is
-                                used to store all keys.
         """
         self.cache_id = cache_id
         self.cache_type = cache_type
         self.global_path = global_path
-        self.file_per_key = not use_single_file
+        locks_path = os.path.join(self.global_path, 'locks')
+        path = os.path.join(locks_path, 'cache_all_global.lock')
+        self.global_lock = fasteners.InterProcessLock(path)
+        path = os.path.join(locks_path, 'cache_{}.lock'.format(self.cache_id))
+        self.cache_lock = fasteners.InterProcessLock(path)
+
+    def __enter__(self):
+        return self
+
+    @abc.abstractmethod
+    def __exit__(self, *exc_info):
+        pass
 
     @cached_property
-    def _global_cache_lock(self):
-        """ Inter-process lock for all caches. """
-        path = os.path.join(self.global_path, 'locks', 'cache_all_global.lock')
-        return fasteners.InterProcessLock(path)
-
-    @cached_property
-    def _cache_lock(self):
-        """ Inter-process lock for this cache. """
-        path = os.path.join(self.global_path, 'locks',
-                            'cache_{}.lock'.format(self.cache_id))
-        return fasteners.InterProcessLock(path)
-
-    @cached_property
-    def _cache_path(self):
-        """
-        Get cache path. Takes global cache lock to check root is created.
-        """
-        if self.global_path is None:
-            log.warning("global path '%s' not setup - could not determine "
-                        "cache path")
-            return
-
+    def cache_base_path(self):
         path = os.path.join(self.global_path, 'caches', self.cache_type,
                             self.cache_id)
-        with self._global_cache_lock:
-            if self.file_per_key:
-                _dir = path
-            else:
-                _dir = os.path.dirname(path)
-
-            if not os.path.isdir(_dir):
-                os.makedirs(_dir)
+        with self.global_lock:
+            if not os.path.isdir(path):
+                os.makedirs(path)
 
         return path
 
-    def _get_unsafe(self, key, path):
-        """
-        Unlocked get not to be used without having first acquired the lock.
+    @abc.abstractmethod
+    def get(self, key):
+        """ Get value from cache using key. """
 
-        @param path: path to cache contents file.
-        """
-        if not path or not os.path.exists(path):
-            log.debug("no cache found at '%s'", path)
-            return
+    @abc.abstractmethod
+    def set(self, key, value):
+        """ Set value in cache using key. """
 
-        with shelve.open(path) as db:
-            return db.get(key)
+    @abc.abstractmethod
+    def bulk_set(self, data):
+        """ Set one or more key/value in cache. """
+
+    @abc.abstractmethod
+    def unset(self, key):
+        """ Remove key/value from cache. """
+
+    @abc.abstractmethod
+    def __iter__(self):
+        pass
+
+    @abc.abstractmethod
+    def __len__(self):
+        pass
+
+
+class MPCacheSimple(MPCacheBase):
+
+    def __exit__(self, *exc_info):
+        """ noop. """
 
     def get(self, key):
-        """
-        Get value for key
+        with self.cache_lock:
+            with shelve.open(os.path.join(self.cache_base_path, key)) as db:
+                return db.get('0')
 
-        @param key: key to lookup in cache.
-        @return: value or None.
-        """
-        path = self._cache_path
-        with self._cache_lock:
-            log.debug("load from cache '%s' (key='%s')", path, key)
-            if self.file_per_key:
-                return self._get_unsafe('0', os.path.join(path, key))
-
-            return self._get_unsafe(key, path)
-
-    def _set_unsafe(self, path, key, value):
-        if self.file_per_key:
-            path = os.path.join(path, key)
-            key = '0'
-
-        with shelve.open(path) as db:
-            db[key] = value
+    def bulk_set(self, data):
+        with self.cache_lock:
+            for key, value in data.items():
+                with shelve.open(os.path.join(self.cache_base_path,
+                                              key)) as db:
+                    db['0'] = value
 
     def set(self, key, value):
+        with self.cache_lock:
+            with shelve.open(os.path.join(self.cache_base_path, key)) as db:
+                db['0'] = value
+
+    def unset(self, key):
+        with self.cache_lock:
+            with shelve.open(os.path.join(self.cache_base_path, key)) as db:
+                del db[key]
+
+    def __iter__(self):
+        with self.cache_lock:
+            for path in os.listdir(self.cache_base_path):
+                with shelve.open(path) as db:
+                    yield db.get('0')
+
+    def __len__(self):
+        with self.cache_lock:
+            return len(os.listdir(self.cache_base_path))
+
+
+# this is the default type
+class MPCache(MPCacheSimple):
+    pass
+
+
+class MPCacheSharded(MPCacheBase):
+    """
+    This cache will distribute key/values across a number of shards each of
+    which being an independent shelve db. Currently has a requirement that keys
+    be integers.
+    """
+    def __init__(self, *args, shards=64, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.num_shards = shards
+        self.max_open_retry = 10
+        self._dbs = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+    def close(self):
+        for i in range(self.num_shards):
+            if i not in self._dbs:
+                continue
+
+            self._dbs[i].close()
+
+    def _get_db(self, key):
         """
-        Set value for key.
-
-        Cache contents are update as read-modify-write of entire contents.
-
-        @param key: key under which we will store value.
-        @param value: value we want to store.
+        Python shelve is not MP safe so if two processes try to access the same
+        cache at once only one will succeed. We retry a fixed number of times
+        and bail if not successful.
         """
-        path = self._cache_path
-        if not path:
-            log.warning("invalid path '%s' - cannot save to cache", path)
-            return
+        idx = key % self.num_shards
+        if idx not in self._dbs:
+            path = os.path.join(self.cache_base_path, str(idx))
+            attempt = 0
+            while True:
+                try:
+                    self._dbs[idx] = shelve.open(path)
+                    break
+                except _gdbm.error:
+                    log.debug("error opening cache %s - sleeping 10s then "
+                              "retrying (attempt %s/%s)", path, attempt,
+                              self.max_open_retry)
+                    attempt += 1
+                    if attempt > self.max_open_retry:
+                        raise
 
-        with self._cache_lock:
-            log.debug("saving to cache '%s' (key=%s)", path, key)
-            self._set_unsafe(path, key, value)
+        return self._dbs[idx]
 
-        log.debug("cache id=%s size=%s", self.cache_id,
-                  os.path.getsize(path))
+    def get(self, key):
+        with self.cache_lock:
+            return self._get_db(key).get(str(key))
+
+    def bulk_set(self, data):
+        with self.cache_lock:
+            for k, v in data.items():
+                self._get_db(k)[str(k)] = v
+
+    def set(self, key, value):
+        with self.cache_lock:
+            self._get_db(key)[str(key)] = value
+
+    def unset(self, key):
+        with self.cache_lock:
+            del self._get_db(key)[str(key)]
+
+    def __iter__(self):
+        with self.cache_lock:
+            for i in range(self.num_shards):
+                for value in self._get_db(i).values():
+                    yield value
+
+    def __len__(self):
+        with self.cache_lock:
+            sum = 0
+            for i in range(self.num_shards):
+                sum += len(self._get_db(i))
+
+            return sum

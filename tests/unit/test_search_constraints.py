@@ -4,9 +4,12 @@ import tempfile
 import shutil
 import subprocess
 
+from unittest import mock
+
 from . import utils
 from searchkit.constraints import (
     BinarySearchState,
+    FileMarkers,
     SearchConstraintSearchSince,
 )
 
@@ -56,6 +59,112 @@ class TestSearchKitBase(utils.BaseTestCase):
 
 
 class TestSearchConstraints(TestSearchKitBase):
+
+    def test_constraints_file_markers_w_trailing_newline(self):
+        with tempfile.TemporaryDirectory() as dtmp:
+            cache_path = os.path.join(dtmp, 'cache')
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'w') as fd:
+                fd.write('this is\n')
+                fd.write('some\n')
+                fd.write('file content\n')
+
+            with open(fpath, 'rb') as fd:
+                orig_pos = fd.tell()
+                eof_pos = fd.seek(0, 2)
+                fd.seek(orig_pos)
+                markers = FileMarkers(fd, eof_pos, cache_path)
+                self.assertEqual(len(markers), 3)
+                self.assertEqual(list(markers), [0, 8, 13])
+                full_cache_path = os.path.join(markers.cache_path, 'caches',
+                                               'search_constraints')
+                self.assertEqual(len(os.listdir(full_cache_path)), 1)
+                cache_file = os.path.join(full_cache_path,
+                                          os.listdir(full_cache_path)[0])
+                mtime1 = os.path.getmtime(cache_file)
+                # re-run and this time should use existing cache
+                markers = FileMarkers(fd, eof_pos, cache_path)
+                self.assertEqual(len(markers), 3)
+                self.assertEqual(list(markers), [0, 8, 13])
+                mtime2 = os.path.getmtime(cache_file)
+                full_cache_path = os.path.join(markers.cache_path, 'caches',
+                                               'search_constraints')
+                self.assertEqual(len(os.listdir(full_cache_path)), 1)
+                self.assertEqual(mtime1, mtime2)
+                self.assertEqual(orig_pos, fd.tell())
+
+                self.assertEqual(markers[0], 0)
+                self.assertEqual(markers[1], 8)
+                self.assertEqual(markers[2], 13)
+                self.assertEqual(markers[3], None)
+
+    def test_constraints_file_markers_no_trailing_newline(self):
+        with tempfile.TemporaryDirectory() as dtmp:
+            cache_path = os.path.join(dtmp, 'cache')
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'w') as fd:
+                fd.write('this is\n')
+                fd.write('some\n')
+                fd.write('file content')
+
+            with open(fpath, 'rb') as fd:
+                orig_pos = fd.tell()
+                eof_pos = fd.seek(0, 2)
+                fd.seek(orig_pos)
+                markers = FileMarkers(fd, eof_pos, cache_path)
+                self.assertEqual(len(markers), 3)
+                self.assertEqual(list(markers), [0, 8, 13])
+
+                self.assertEqual(markers[0], 0)
+                self.assertEqual(markers[1], 8)
+                self.assertEqual(markers[2], 13)
+                self.assertEqual(markers[3], None)
+
+    @mock.patch.object(FileMarkers, 'CHUNK_SIZE', 14)
+    def test_constraints_file_markers_gt_block(self):
+        with tempfile.TemporaryDirectory() as dtmp:
+            cache_path = os.path.join(dtmp, 'cache')
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'w') as fd:
+                fd.write('this is\n')
+                fd.write('some\n')
+                fd.write('file content\n')
+
+            with open(fpath, 'rb') as fd:
+                orig_pos = fd.tell()
+                eof_pos = fd.seek(0, 2)
+                fd.seek(orig_pos)
+                markers = FileMarkers(fd, eof_pos, cache_path)
+                self.assertEqual(len(markers), 3)
+                self.assertEqual(list(markers), [0, 8, 13])
+                self.assertEqual(markers[0], 0)
+                self.assertEqual(markers[1], 8)
+                self.assertEqual(markers[2], 13)
+                self.assertEqual(markers[3], None)
+
+    @mock.patch.object(FileMarkers, 'CHUNK_SIZE', 7)
+    @mock.patch.object(FileMarkers, 'BLOCK_SIZE_BASE', 1)
+    def test_constraints_file_markers_chunk_too_small(self):
+        with tempfile.TemporaryDirectory() as dtmp:
+            cache_path = os.path.join(dtmp, 'cache')
+            fpath = os.path.join(dtmp, 'f1')
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'w') as fd:
+                fd.write('this is\n')
+                fd.write('some\n')
+                fd.write('file content')
+
+            with open(fpath, 'rb') as fd:
+                orig_pos = fd.tell()
+                eof_pos = fd.seek(0, 2)
+                fd.seek(orig_pos)
+                markers = FileMarkers(fd, eof_pos, cache_path)
+                self.assertEqual(len(markers), 3)
+                self.assertEqual(list(markers), [0, 8, 13])
+                self.assertEqual(markers[0], 0)
+                self.assertEqual(markers[1], 8)
+                self.assertEqual(markers[2], 13)
+                self.assertEqual(markers[3], None)
 
     @utils.create_files({'f1': LOGS_W_TS})
     def test_binary_search(self):
