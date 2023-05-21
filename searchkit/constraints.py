@@ -12,6 +12,71 @@ from searchkit.utils import MPCacheSharded
 from searchkit.log import log
 
 
+class TimestampMatcherBase(object):
+    """
+    Match start of line timestamps in a standard way.
+
+    Files containing lines starting with timestamps allow us to find a line
+    that is before/after a specific time. This class is implemented to provides
+    a common way to identify timestamps of varying format.
+    """
+
+    # used when converting a string to datetime.datetime
+    DEFAULT_DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+    def __init__(self, line):
+        self.result = None
+        for expr in self.patterns:
+            ret = re.match(expr, line)
+            if ret:
+                self.result = ret
+                break
+        else:
+            log.debug("failed to identify constraint datetime")
+
+    @property
+    @abc.abstractmethod
+    def patterns(self):
+        """
+        List of regex patterns used to match a timestamp at the start of lines.
+
+        Patterns *must* use named groups according to types i.e. year,
+        month etc. See https://docs.python.org/3/library/re.html for format
+        options.
+
+        If the format of the timestamp is non-standard and the result needs
+        post-processing before being used, a property with the group name
+        can be added to implementations of this class and that will be used
+        rather than extracting the value directly from the result.
+        """
+
+    @property
+    def matched(self):
+        """ Return True if a timestamp has been matched. """
+        return self.result is not None
+
+    @property
+    def strptime(self):
+        """
+        Converts the extracted timestamp into a datetime.datetime object.
+
+        Group names are extracted directly from the result unless an override
+        property has been defined.
+
+        @return: datetime.datetime object
+        """
+        vals = {}
+        for key in ['day', 'month', 'year', 'hours', 'minutes', 'seconds']:
+            if hasattr(self, key):
+                vals[key] = getattr(self, key)
+            else:
+                vals[key] = self.result.group(key)
+
+        _date = ("{year}-{month}-{day} {hours}:{minutes}:{seconds}".
+                 format(**vals))
+        return datetime.strptime(_date, self.DEFAULT_DATETIME_FORMAT)
+
+
 class ConstraintBase(abc.ABC):
 
     @cached_property
@@ -405,10 +470,10 @@ class BinarySeekSearchBase(ConstraintBase):
     @abc.abstractmethod
     def extracted_datetime(self, line):
         """
-        Extract datetime from line. Returns a datetime object or None if unable
-        to extract one from the line.
+        Extract timestamp from start of line.
 
         @param line: text line to extract a datetime from.
+        @return: datetime.datetime object or None
         """
 
     @abc.abstractproperty
@@ -622,8 +687,8 @@ class BinarySeekSearchBase(ConstraintBase):
 
 class SearchConstraintSearchSince(BinarySeekSearchBase):
 
-    def __init__(self, current_date, cache_path, exprs=None, days=0, hours=24,
-                 **kwargs):
+    def __init__(self, current_date, cache_path, exprs=None,
+                 ts_matcher_cls=None, days=0, hours=24, **kwargs):
         """
         A search expression is provided that allows us to identify a datetime
         on each line and check whether it is within a given time period. The
@@ -633,15 +698,25 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         of hours.
 
         @param current_date: cli.date(format="+{}".format(self.date_format))
-        @param exprs: a list of search/regex expressions used to identify a
-                      date/time in.
-        each line in the file we are applying this constraint to.
+        @param cache_path: path to location where we can create an MPCache
+        @param exprs: [DEPRECATED] a list of search/regex expressions used to
+                      identify a date/time in. This is deprecated, use
+                      ts_matcher_cls.
+        @param ts_matcher_cls: TimestampMatcherBase implementation used to
+                               match timestamps at start if lines.
         @param days: override default period with number of days
         @param hours: override default period with number of hours
         """
         super().__init__(**kwargs)
         self.cache_path = cache_path
-        self.date_format = '%Y-%m-%d %H:%M:%S'
+        self.ts_matcher_cls = ts_matcher_cls
+        if ts_matcher_cls:
+            self.date_format = ts_matcher_cls.DEFAULT_DATETIME_FORMAT
+        else:
+            log.warning("using patterns to identify timestamp is deprecated - "
+                        "use ts_matcher_cls instead")
+            self.date_format = TimestampMatcherBase.DEFAULT_DATETIME_FORMAT
+
         self.current_date = datetime.strptime(current_date, self.date_format)
         self._line_pass = 0
         self._line_fail = 0
@@ -655,17 +730,21 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         self._results = {}
 
     def extracted_datetime(self, line):
-        """
-        Validate if the given line falls within the provided constraint. In
-        this case that's whether it has a datetime that is >= to the "since"
-        date.
-
-        @param line: text line to extract a datetime from.
-        """
         if type(line) == bytes:
             # need this for e.g. gzipped files
             line = line.decode("utf-8")
 
+        if self.ts_matcher_cls:
+            timestamp = self.ts_matcher_cls(line)
+            if timestamp.matched:
+                return timestamp.strptime
+
+            return
+
+        # NOTE: the following code can be removed once we remove the deprecated
+        # exprs arg from this class.
+        log.debug("using patterns to identify timestamp is deprecated - "
+                  "use ts_matcher_cls instead")
         for expr in self.exprs:
             # log.debug("attempting to extract from line using expr '%s'",
             #           expr)

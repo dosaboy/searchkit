@@ -9,9 +9,18 @@ from unittest import mock
 from . import utils
 from searchkit.constraints import (
     BinarySearchState,
+    TimestampMatcherBase,
     FileMarkers,
     SearchConstraintSearchSince,
 )
+
+
+class TimestampSimple(TimestampMatcherBase):
+
+    @property
+    def patterns(self):
+        return [r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})+\s+'
+                r'(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d+)']
 
 
 LOGS_W_TS = """2022-01-01 00:00:00.00 L0
@@ -170,16 +179,15 @@ class TestSearchConstraints(TestSearchKitBase):
     def test_binary_search(self):
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         _file = os.path.join(self.data_root, 'f1')
-        datetime_expr = r"^([\d-]+\s+[\d:]+)"
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
+                                        ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'rb') as fd:
             self.assertEqual(c.apply_to_file(fd), 0)
 
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
+                                        ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' + LOGS_W_TS)
 
@@ -188,7 +196,7 @@ class TestSearchConstraints(TestSearchKitBase):
 
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
+                                        ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' * 499 + LOGS_W_TS)
 
@@ -198,7 +206,7 @@ class TestSearchConstraints(TestSearchKitBase):
 
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
-                                        exprs=[datetime_expr], days=7)
+                                        ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' * 500 + LOGS_W_TS)
 

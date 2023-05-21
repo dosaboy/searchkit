@@ -62,6 +62,10 @@ for r in results:
 
 The `SequenceSearchDef` class supports matching string sequences ("sections") over multiple lines by matching a start, end and optional body in between. These section components are each defined with their own `SearchDef` object.
 
+### Search Constraints
+
+If searching e.g. a log file where each line starts with a timestamp and you only want results that match after a specific time then you can use ```search.constraints.SearchConstraintSearchSince``` and apply to either the whole file or each line in turn. The latter allows constraints to be associated with a SearchDef and therefore only apply within the context of that search.
+
 ## Installation
 
 searchkit is packaged in [pypi](https://pypi.org/project/searchkit) and can be installed as follows:
@@ -112,3 +116,29 @@ for seq, results in results.find_sequence_by_tag('myseq').items():
         if 'body' in r.tag:
             print(r.get(0))
 ```
+
+An example search with constraints is as follows:
+
+```python
+from searchkit import FileSearcher, SearchDef
+from searchkit.constraints import SearchConstraintSearchSince, DateTimeMatcherBase
+
+class MyDateTimeMatcher(DateTimeMatcherBase):
+    EXPRS = [r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) '
+             r'(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})']
+
+fname = 'foo.txt'
+with open(fname, 'w') as fd:
+  fd.write('2023-01-01 12:34:24 feeling cold\n')
+  fd.write('2023-06-01 12:34:24 feeling hot')
+
+today = '2023-06-02 12:34:24'
+constraint = SearchConstraintSearchSince(today, None,
+                                         MyDateTimeMatcher)
+fs = FileSearcher(constraint=constraint)
+fs.add(SearchDef(r'\S+ \S+ \S+ (\S+)'), fname)
+results = fs.run()
+for r in results.find_by_path(fname):
+    print(r.get(1) == 'hot')
+```
+
