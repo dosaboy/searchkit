@@ -121,11 +121,13 @@ An example search with constraints is as follows:
 
 ```python
 from searchkit import FileSearcher, SearchDef
-from searchkit.constraints import SearchConstraintSearchSince, DateTimeMatcherBase
+from searchkit.constraints import SearchConstraintSearchSince, TimestampMatcherBase
 
-class MyDateTimeMatcher(DateTimeMatcherBase):
-    EXPRS = [r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) '
-             r'(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})']
+class MyDateTimeMatcher(TimestampMatcherBase):
+    @property
+    def patterns(self):
+        return [r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2}) '
+                r'(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})']
 
 fname = 'foo.txt'
 with open(fname, 'w') as fd:
@@ -134,7 +136,7 @@ with open(fname, 'w') as fd:
 
 today = '2023-06-02 12:34:24'
 constraint = SearchConstraintSearchSince(today, None,
-                                         MyDateTimeMatcher)
+                                         ts_matcher_cls=MyDateTimeMatcher)
 fs = FileSearcher(constraint=constraint)
 fs.add(SearchDef(r'\S+ \S+ \S+ (\S+)'), fname)
 results = fs.run()
