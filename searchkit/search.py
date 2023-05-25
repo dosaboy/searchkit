@@ -1029,7 +1029,8 @@ class SearchTask(object):
                       path)
             return stats
 
-        log.debug("starting execution on path %s", path)
+        log.debug("starting execution on path %s (searches=%s)", path,
+                  len(self.search_defs))
         try:
             # first assume compressed then plain
             with gzip.open(path, 'rb') as fd:
@@ -1067,10 +1068,13 @@ class SearchTaskStats(UserDict):
         self.reset()
 
     def reset(self):
-        self.data = {'lines_searched': 0,
+        self.data = {'searches': 0,
+                     'searches_by_job': [],
+                     'lines_searched': 0,
                      'jobs_completed': 0,
                      'total_jobs': 0,
-                     'results': 0}
+                     'results': 0,
+                     'num_deduped': 0}
 
     def update(self, stats):
         if not stats:
@@ -1080,7 +1084,7 @@ class SearchTaskStats(UserDict):
             self.data[key] += val
 
     def __repr__(self):
-        return str(self.data)
+        return ', '.join([f"{k}={v}" for k, v in self.data.items()])
 
 
 class SearcherBase(abc.ABC):
@@ -1401,6 +1405,10 @@ class FileSearcher(SearcherBase):
             log.debug("catalog is empty - nothing to run")
             return SearchResultsCollection(self.catalog, ResultStoreSimple())
 
+        self.stats['searches'] = sum([len(p['searches'])
+                                      for p in self.catalog])
+        self.stats['searches_by_job'] = [len(p['searches'])
+                                         for p in self.catalog]
         if len(self.files) > 1:
             log.debug("running searches (parallel=True)")
             with multiprocessing.Manager() as mgr:
@@ -1416,7 +1424,5 @@ class FileSearcher(SearcherBase):
             self._run_single(results, rs)
             self.stats['num_deduped'] = rs.num_deduped
 
-        log.debug("filesearcher: stats=%s", self.stats)
-        log.debug("filesearcher: completed (results=%s, dedup=%s)",
-                  len(results), self.stats['num_deduped'])
+        log.debug("filesearcher: completed (%s)", self.stats)
         return results
