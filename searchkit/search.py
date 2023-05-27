@@ -659,11 +659,11 @@ class SearchCatalog(object):
 
     def __init__(self, max_logrotate_depth=7):
         self.max_logrotate_depth = max_logrotate_depth
-        self._user_paths = {}
         self._source_ids = {}
         self._search_tags = {}
         self._simple_searches = {}
         self._sequence_searches = {}
+        self._entries = {}
 
     def register(self, search, user_path):
         """
@@ -689,10 +689,14 @@ class SearchCatalog(object):
         else:
             self._simple_searches[search.id] = search
 
-        if user_path in self._user_paths:
-            self._user_paths[user_path].append(search.id)
-        else:
-            self._user_paths[user_path] = [search.id]
+        for path in self._expand_path(user_path):
+            if path in self._entries:
+                entry = self._entries[path]
+                entry['searches'].append(search)
+            else:
+                self._entries[path] = {'source_id': self._get_source_id(path),
+                                       'path': path,
+                                       'searches': [search]}
 
     def resolve_from_id(self, id):
         """ Resolve search definition from unique id. """
@@ -776,20 +780,11 @@ class SearchCatalog(object):
         return s_id
 
     def __len__(self):
-        items = 0
-        for user_path in self._user_paths:
-            items += len(self._expand_path(user_path))
-
-        return items
+        return len(self._entries)
 
     def __iter__(self):
-        for user_path, searches in self._user_paths.items():
-            for path in self._expand_path(user_path):
-                yield {'user_path': user_path,
-                       'path': path,
-                       'source_id': self._get_source_id(path),
-                       'searches': [self.resolve_from_id(id)
-                                    for id in searches]}
+        for entry in self._entries.values():
+            yield entry
 
 
 class SearchTask(object):
@@ -976,8 +971,8 @@ class SearchTask(object):
         """
         self.stats.reset()
         sequence_results = SequenceSearchResults()
-        offset = self.constraints_manager.apply_global(self.info['user_path'],
-                                                       fd)
+        search_ids = set([s.id for s in self.search_defs])
+        offset = self.constraints_manager.apply_global(search_ids, fd)
         log.debug("starting search of %s (offset=%s, pos=%s)", fd.name, offset,
                   fd.tell())
         runnable = {s.id: _runnable
@@ -985,6 +980,10 @@ class SearchTask(object):
         ln = 0
         # NOTE: line numbers start at 1 hence offset + 1
         for ln, line in enumerate(fd, start=offset + 1):
+            # This could be helpful to show progress for large files
+            if ln % 100000 == 0:
+                log.debug("%s lines searched in %s", ln, fd.name)
+
             self.stats['lines_searched'] += 1
             if type(line) == bytes:
                 line = line.decode("utf-8")
@@ -1123,14 +1122,14 @@ class SearchConstraintsManager(object):
         self.global_constraints = []
         self.global_restrictions = set()
 
-    def apply_global(self, user_path, fd):
+    def apply_global(self, search_ids, fd):
         """ Apply any global constraints to the entire file. """
         offset = 0
         if not self.global_constraints:
             log.debug("no global constraint to apply to %s", fd.name)
             return offset
 
-        if user_path in self.global_restrictions:
+        if self.global_restrictions.intersection(search_ids):
             log.debug("skipping global constraint for %s", fd.name)
             return offset
 
@@ -1198,7 +1197,7 @@ class FileSearcher(SearcherBase):
                                          applied to this path.
         """
         if not allow_global_constraints:
-            self.constraints_manager.global_restrictions.add(path)
+            self.constraints_manager.global_restrictions.add(searchdef.id)
 
         self.catalog.register(searchdef, path)
 
@@ -1333,6 +1332,8 @@ class FileSearcher(SearcherBase):
                               results_store=results_store)
             self.stats.update(task.execute())
 
+        self.stats['jobs_completed'] = 1
+        self.stats['total_jobs'] = 1
         self._purge_results(results, queue, self.stats['results'])
 
     def _run_mp(self, mgr, results, results_store):

@@ -2,6 +2,7 @@ import abc
 import fasteners
 import os
 import shelve
+import time
 import _gdbm
 
 from contextlib import ContextDecorator
@@ -160,6 +161,7 @@ class MPCacheSharded(MPCacheBase):
                     log.debug("error opening cache %s - sleeping 10s then "
                               "retrying (attempt %s/%s)", path, attempt,
                               self.max_open_retry)
+                    time.sleep(10)
                     attempt += 1
                     if attempt > self.max_open_retry:
                         raise

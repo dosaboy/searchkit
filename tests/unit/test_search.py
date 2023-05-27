@@ -416,6 +416,25 @@ class TestSearchKit(TestSearchKitBase):
                                     key=LogrotateLogSort()),
                              ordered_contents)
 
+    def test_catalog_user_paths_overlap(self):
+        with tempfile.TemporaryDirectory() as dtmp:
+            logspath = os.path.join(dtmp, 'var/log')
+            os.makedirs(logspath)
+            logpath = os.path.join(logspath, 'foo.log')
+            with open(logpath, 'w') as fd:
+                fd.write('blah')
+
+            catalog = SearchCatalog(max_logrotate_depth=1)
+            s1 = SearchDef(r'.+', tag=1)
+            catalog.register(s1, os.path.join(logspath, '*.log'))
+            s2 = SearchDef(r'.+', tag=2)
+            catalog.register(s2, os.path.join(logspath, 'foo*.log'))
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(list(catalog),
+                             [{'source_id': catalog._get_source_id(logpath),
+                               'path': logpath,
+                               'searches': [s1, s2]}])
+
     def test_catalog_glob_filesort(self):
         dir_contents = []
         with tempfile.TemporaryDirectory() as dtmp:

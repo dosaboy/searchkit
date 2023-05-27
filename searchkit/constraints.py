@@ -68,13 +68,11 @@ class TimestampMatcherBase(object):
         vals = {}
         for key in ['day', 'month', 'year', 'hours', 'minutes', 'seconds']:
             if hasattr(self, key):
-                vals[key] = getattr(self, key)
+                vals[key.rstrip('s')] = int(getattr(self, key))
             else:
-                vals[key] = self.result.group(key)
+                vals[key.rstrip('s')] = int(self.result.group(key))
 
-        _date = ("{year}-{month}-{day} {hours}:{minutes}:{seconds}".
-                 format(**vals))
-        return datetime.strptime(_date, self.DEFAULT_DATETIME_FORMAT)
+        return datetime(**vals)
 
 
 class ConstraintBase(abc.ABC):
@@ -389,7 +387,7 @@ class FileMarkers(object):
 
     def _readchunk(self, fd):
         while True:
-            data = fd.read(self.chunk_size).decode()
+            data = fd.read(self.chunk_size).decode('unicode_escape')
             if data == '':
                 break
 
