@@ -1,14 +1,12 @@
 import abc
-import hashlib
-import os
 import re
-import tempfile
 import uuid
+import bisect
 
+from enum import Enum
 from datetime import datetime, timedelta
 from functools import cached_property
 
-from searchkit.utils import MPCacheSharded
 from searchkit.log import log
 
 
@@ -109,352 +107,6 @@ class ConstraintBase(abc.ABC):
         """ provide string repr of this object. """
 
 
-class SkipRangeOverlapException(Exception):
-    def __init__(self, ln):
-        msg = ("the current and previous skip ranges overlap which "
-               "suggests that we have re-entered a range by skipping "
-               "line {}.".format(ln))
-        super().__init__(msg)
-
-
-class SkipRange(object):
-    # skip directions
-    SKIP_BWD = 0
-    SKIP_FWD = 1
-
-    def __init__(self):
-        self.direction = self.SKIP_BWD
-        self.current = set()
-        self.prev = set()
-
-    def re_entered(self):
-        if self.prev.intersection(self.current):
-            return True
-
-        return False
-
-    def add(self, ln):
-        self.current.add(ln)
-        if self.prev.intersection(self.current):
-            raise SkipRangeOverlapException(ln)
-
-    def __len__(self):
-        return len(self.current)
-
-    def save_and_reset(self):
-        if self.current:
-            self.prev = self.current
-            self.current = set()
-            self.direction = self.SKIP_BWD
-
-    def __repr__(self):
-        if self.current:
-            _r = sorted(list(self.current))
-            if self.direction == self.SKIP_BWD:
-                _dir = '<-'
-            else:
-                _dir = '->'
-
-            return "+skip({}{}{})".format(_r[0], _dir, _r[-1])
-
-        return ""
-
-
-class BinarySearchState(object):
-    # max contiguous skip lines before bailing on file search
-    SKIP_MAX = 500
-
-    RC_FOUND_GOOD = 0
-    RC_FOUND_BAD = 1
-    RC_SKIPPING = 2
-    RC_ERROR = 3
-
-    def __init__(self, fd_info, cur_pos):
-        self.fd_info = fd_info
-        self.rc = self.RC_FOUND_GOOD
-        self.cur_ln = 0
-        self.cur_pos = cur_pos
-        self.next_pos = 0
-
-    def start(self):
-        """ Must be called before starting searches beyond the first line of
-        a file.
-
-        This is not done in __init__ since it will load file markers, a
-        potentially expensive operation that should only be done if necessary.
-        """
-        self.search_range_start = 0
-        self.search_range_end = len(self.fd_info.markers) - 1
-        self.update_pos_pointers()
-        self.invalid_range = SkipRange()
-        self.last_known_good_ln = None
-
-    def save_last_known_good(self):
-        self.last_known_good_ln = self.cur_ln
-
-    def skip_current_line(self):
-        if len(self.invalid_range) == self.SKIP_MAX - 1:
-            self.rc = self.RC_ERROR
-            log.warning("reached max contiguous skips (%d) - skipping "
-                        "constraint for file %s", self.SKIP_MAX,
-                        self.fd_info.fd.name)
-            return
-
-        self.rc = self.RC_SKIPPING
-        try:
-            self.invalid_range.add(self.cur_ln)
-            if (self.invalid_range.direction == SkipRange.SKIP_BWD and
-                    self.cur_ln > self.search_range_start):
-                self.cur_ln -= 1
-            elif self.cur_ln < self.search_range_end:
-                if self.invalid_range.direction == SkipRange.SKIP_BWD:
-                    log.debug("changing skip direction to fwd")
-
-                self.invalid_range.direction = SkipRange.SKIP_FWD
-                self.cur_ln += 1
-
-            self.update_pos_pointers()
-        except SkipRangeOverlapException:
-            if self.last_known_good_ln is not None:
-                self.rc = self.RC_FOUND_GOOD
-                self.cur_ln = self.last_known_good_ln
-                self.update_pos_pointers()
-                log.debug("re-entered skip range so good line is %s",
-                          self.cur_ln)
-                self.fd_info.fd.seek(self.cur_pos)
-            else:
-                self.rc = self.RC_ERROR
-                log.error("last known good not set so not sure where to "
-                          "go after skip range overlap.")
-
-    def update_pos_pointers(self):
-        if len(self.fd_info.markers) == 0:
-            log.debug("file %s has no markers - skipping update pos pointers",
-                      self.fd_info.fd.name)
-            return
-
-        ln = self.cur_ln
-        self.cur_pos = self.fd_info.markers[ln]
-        if len(self.fd_info.markers) > ln + 1:
-            self.next_pos = self.fd_info.markers[ln + 1]
-        else:
-            self.next_pos = self.fd_info.eof_pos
-
-    def get_next_midpoint(self):
-        """
-        Given two line numbers in a file, find the mid point.
-        """
-        start = self.search_range_start
-        end = self.search_range_end
-        if start == end:
-            return start, self.fd_info.markers[start]
-
-        range = end - start
-        mid = start + int(range / 2) + (range % 2)
-        log.debug("midpoint: start=%s, mid=%s, end=%s", start, mid, end)
-        self.cur_ln = mid
-
-    def __repr__(self):
-        return ("start={}{}, end={}, cur_pos={}, cur_ln={}, rc={}".format(
-                self.search_range_start,
-                self.invalid_range,
-                self.search_range_end,
-                self.cur_pos,
-                self.cur_ln,
-                self.rc))
-
-
-class FileMarkers(object):
-    INDEX_FSIZE_LIMIT = (1024 ** 3) * 10
-    SYNC_LIMIT = 100000
-    # NOTE: chunk much contain a newline
-    BLOCK_SIZE_BASE = 4096
-    CHUNK_SIZE = BLOCK_SIZE_BASE * 64
-
-    def __init__(self, fd, eof_pos, cache_path=None):
-        """
-        Index start position for every line in file. Starts at current
-        position and is non-destructive i.e. original position is
-        restored.
-
-        This is an expensive operation and we only want to do it once per
-        file/path so the results are cached on disk and loaded when needed.
-
-        NOTE: this is only safe to use if the file does not change between
-              calls.
-        """
-        if cache_path is None:
-            self.cache_path = tempfile.mkdtemp()
-            log.debug("cache path not provided to filemarkers so using a "
-                      "custom one (%s)", self.cache_path)
-        else:
-            self.cache_path = cache_path
-
-        self.fd = fd
-        self.file_path = self.fd.name
-        hash = self._fname_hash(self.file_path)
-        mtimesize = self._fmtime_size(self.file_path)
-        self.cache_id = 'file_markers_{}_{}'.format(hash, mtimesize)
-        self.cache_type = 'search_constraints'
-        self.orig_pos = self.fd.tell()
-        self.eof_pos = eof_pos
-        self._primed = False
-        self._num_lines = None
-        self.chunk_size = self.CHUNK_SIZE
-
-    def _do_chunk(self, cache, chunk, current_position, marker):
-        if (self.fd.tell() < self.eof_pos) and '\n' not in chunk:
-            log.warning("no newline found in chunk len=%s starting at "
-                        "%s - increasing chunksize by %s bytes and "
-                        "trying again", self.chunk_size, current_position,
-                        self.BLOCK_SIZE_BASE)
-            self.chunk_size += self.BLOCK_SIZE_BASE
-            self.fd.seek(current_position)
-            return -1, marker
-
-        markers = {}
-        chunkpos = 0
-        while True:
-            n = chunk[chunkpos:].find('\n')
-            if n == -1:
-                break
-
-            chunkpos += n + 1
-            if current_position + chunkpos == self.eof_pos:
-                # don't save eof
-                break
-
-            marker += 1
-            markers[marker] = current_position + chunkpos
-            if marker % self.SYNC_LIMIT == 0:
-                log.debug("indexed {0:.2f}% of file".format(
-                          (100 / self._num_lines) * marker))
-
-        cache.bulk_set(markers)
-        return chunkpos, marker
-
-    def _prime(self):
-        self.fd.seek(self.orig_pos)
-        self._num_lines = sum(1 for i in self.fd)
-        self.fd.seek(self.orig_pos)
-        log.debug("priming index cache for file %s in %s (numlines=%s)",
-                  self.file_path,
-                  self.cache_path, self._num_lines)
-        with MPCacheSharded(self.cache_id, self.cache_type,
-                            self.cache_path) as cache:
-            if cache.get(self._num_lines - 1) is not None:
-                log.debug("using existing file index from cache.")
-                self._primed = True
-                return
-
-            main_marker = 0
-            main_pos = self.orig_pos
-            cache.set(main_marker, self.orig_pos)
-            remainder = ''
-            for chunk in self._readchunk(self.fd):
-                if remainder != '':
-                    chunk = remainder + chunk
-
-                chunk_pos, main_marker = self._do_chunk(cache, chunk, main_pos,
-                                                        main_marker)
-                if chunk_pos >= 0:
-                    remainder = chunk[chunk_pos:]
-                    main_pos += chunk_pos
-                else:
-                    # this implies we are going around again
-                    remainder = ''
-
-        self.fd.seek(self.orig_pos)
-        log.debug("finished creating index. (lines=%s)", self._num_lines)
-        self._primed = True
-
-    def _fname_hash(self, path):
-        hash = hashlib.sha256()
-        hash.update(path.encode('utf-8'))
-        return hash.hexdigest()
-
-    def _fmtime_size(self, path):
-        """
-        Criteria used to determine if file contents changed since markers were
-        last generated.
-        """
-        if not os.path.exists(path):
-            return 0
-
-        mtime = os.path.getmtime(path)
-        size = os.path.getsize(path)
-        return "{}+{}".format(mtime, size)
-
-    def _readchunk(self, fd):
-        while True:
-            data = fd.read(self.chunk_size).decode('unicode_escape')
-            if data == '':
-                break
-
-            yield data
-
-    def __getitem__(self, key):
-        if not self._primed:
-            self._prime()
-
-        with MPCacheSharded(self.cache_id, self.cache_type,
-                            self.cache_path) as cache:
-            return cache.get(key)
-
-    def __iter__(self):
-        if not self._primed:
-            self._prime()
-
-        with MPCacheSharded(self.cache_id, self.cache_type,
-                            self.cache_path) as cache:
-            for value in sorted(cache):
-                yield value
-
-    def __len__(self):
-        if not self._primed:
-            self._prime()
-
-        return self._num_lines
-
-
-class SeekInfo(object):
-
-    def __init__(self, fd, cache_path=None):
-        """
-        @param cache_path: provide a path to save cache info if you want it to
-                          persist.
-        """
-        self.fd = fd
-        self.iterations = 0
-        self._orig_pos = self.fd.tell()
-        self.markers = FileMarkers(fd, self.eof_pos, cache_path)
-
-    @cached_property
-    def eof_pos(self):
-        """
-        Returns file EOF position.
-        """
-        orig = self.fd.tell()
-        eof = self.fd.seek(0, 2)
-        self.fd.seek(orig)
-        return eof
-
-    @cached_property
-    def orig_pos(self):
-        """
-        The original position of the file descriptor.
-
-        NOTE: cannot be called when iterating over an fd. Must be called before
-        any destructive operations take place.
-        """
-        return self._orig_pos
-
-    def reset(self):
-        log.debug("restoring file position to start (%s)",
-                  self.orig_pos)
-        self.fd.seek(self.orig_pos)
-
-
 class BinarySeekSearchBase(ConstraintBase):
     """
     Provides a way to seek to a point in a file using a binary search and a
@@ -462,7 +114,6 @@ class BinarySeekSearchBase(ConstraintBase):
     """
 
     def __init__(self, allow_constraints_for_unverifiable_logs=True):
-        self.fd_info = None
         self.allow_unverifiable_logs = allow_constraints_for_unverifiable_logs
 
     @abc.abstractmethod
@@ -501,186 +152,636 @@ class BinarySeekSearchBase(ConstraintBase):
 
         return True
 
-    def _seek_and_validate(self, datetime_obj):
+
+class ValidLinesNotFound(Exception):
+    """Raised when a log file contains proper timestamps but
+    no log lines after the since date."""
+
+
+class ValidFormattedDateNotFound(Exception):
+    """Raised when a log file does not contain any line with
+    date suitable to specified date format"""
+
+
+class DateNotFoundInLine(Exception):
+    """Raised when searcher has encountered a line with no date
+    and performed forward-backward searches, but still yet, could
+    not found a line with date."""
+
+
+class InvalidSearchState(Exception):
+    """Raised when a variable dependent on another variable (e.g.
+    the variable x only has value when y is True) is accessed without
+    checking the prerequisite variable."""
+
+
+class FindTokenStatus(Enum):
+    FOUND = 1,
+    REACHED_EOF = 2,
+    FAILED = 3
+
+
+class SearchState(object):
+    def __init__(self, status: FindTokenStatus, offset=0):
         """
-        Seek to position and validate. If the line at pos is valid the new
-        position is returned otherwise None.
-
-        NOTE: this operation is destructive and will always point to the next
-              line after being called.
-
-        @param pos: position in a file.
+        @param status: current status of search
+        @param offset: current position in file from which next search will be
+                       started.
         """
-        if self._line_date_is_valid(datetime_obj):
-            return self.fd_info.fd.tell()
+        self._status = status
+        self._offset = offset
 
-    def _check_line(self, search_state):
+    @property
+    def status(self):
+        return self._status
+
+    @property
+    def offset(self):
+        if self.status == FindTokenStatus.FAILED:
+            raise InvalidSearchState()
+
+        return self._offset
+
+
+class NonDestructiveFileRead(object):
+    """ Context manager class that saves current position at start and restores
+        once finished. """
+    def __init__(self, file):
+        self.file = file
+        self.original_position = file.tell()
+
+    def __enter__(self):
+        return self.file
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        self.file.seek(self.original_position)
+
+
+class LogLine(object):
+    """Class representing a line in a log file.
+
+    Keeps the start/end offsets of the line. Line content is lazy-loaded on
+    demand by calling the `text` method.
+    """
+
+    MAX_DATETIME_READ_BYTES = 64
+
+    def __init__(self, file, constraint, line_start_lf, line_end_lf):
+        assert line_start_lf
+        assert line_end_lf
+        assert line_start_lf.offset is not None
+        assert line_end_lf.offset is not None
+        self._file = file
+        self._constraint = constraint
+        self._line_start_lf = line_start_lf
+        self._line_end_lf = line_end_lf
+
+    def __len__(self):
+        return (self.end_offset - self.start_offset) + 1
+
+    @property
+    def start_offset(self):
+        """Offset of the log line's first character (excluding \n)"""
+        # Depending on whether we found the start line feed
+        # or not, we discard one character at the beginning
+        # (being the \n)
+        if self.start_lf.status == FindTokenStatus.FOUND:
+            return self.start_lf.offset + 1
+
+        return self.start_lf.offset
+
+    @property
+    def end_offset(self):
+        """Offset of the log line's last character (excluding \n)"""
+        # Depending on whether we found the end line feed
+        # or not, we discard one character at the end (being
+        # the \n)
+        if self.end_lf.status == FindTokenStatus.FOUND:
+            return self.end_lf.offset - 1
+
+        return self.end_lf.offset
+
+    @property
+    def start_lf(self):
+        """Offset of the log line's starting line feed."""
+        return self._line_start_lf
+
+    @property
+    def end_lf(self):
+        """Offset of the log line's ending line feed."""
+        return self._line_end_lf
+
+    @property
+    def date(self):
+        """Extract the date from the log line, if any.
+
+        The function will use extracted_datetime function to parse
+        the date/time.
+
+        @return: datetime: if `text` contains a valid datetime otherwise None.
         """
-        Attempt to read and validate datetime from line.
+        return self._constraint.extracted_datetime(
+            self._read_line(self.MAX_DATETIME_READ_BYTES)
+        )
 
-        @return new position or -1 if we were not able to validate the line.
+    @property
+    def text(self):
+        return self._read_line(max_len=len(self))
+
+    def _read_line(self, max_len):
+        """Retrieve the line text.
+
+        This function seeks to the line start and reads the line content
+        on demand. The function will revert the file offset back after reading
+        to where it was before.
+
+        @return: the line text string
         """
-        self.fd_info.fd.seek(search_state.cur_pos)
-        # don't read the whole line since we only need the date at the start.
-        # hopefully 64 bytes is enough for any date+time format.
-        datetime_obj = self.extracted_datetime(self.fd_info.fd.read(64))
-        self.fd_info.fd.seek(search_state.next_pos)
-        if datetime_obj is None:
-            return -1
+        with NonDestructiveFileRead(self._file) as f:
+            f.seek(self.start_offset)
+            line_text = f.read(max_len)
+            return line_text
 
-        return self._seek_and_validate(datetime_obj)
 
-    def _seek_next(self, state):
-        log.debug("seek %s", state)
-        newpos = self._check_line(state)
-        if newpos == -1:
-            if not self.allow_unverifiable_logs:
-                log.info("file contains unverifiable lines and "
-                         "allow_constraints_for_unverifiable_logs is False  "
-                         "- aborting constraints for this file.")
-                state.rc = state.RC_ERROR
-                return state
+class LogFileDateSinceSeeker(object):
+    r"""Performs "since" date lookups with file offsets. This is
+    useful for performing line-based binary date searches on a log file.
 
-            # until we get out of a skip range we want to leave the pos at the
-            # start but we rely on the caller to enforce this so that we don't
-            # have to seek(0) after every skip.
-            state.skip_current_line()
-            return state
+    Implements __len__ and __getitem__ methods in order to behave like a list.
+    When __getitem__ is called with an offset the algorithm locates the
+    rightmost and leftmost line feed '\n' to form a line. For example with the
+    following file contents:
 
-        if newpos is None:
-            state.rc = state.RC_FOUND_BAD
-            if state.cur_ln == 0:
-                log.debug("first line is not valid, checking last line")
-                state.cur_ln = state.search_range_end
-                state.update_pos_pointers()
-            elif (state.search_range_end - state.search_range_start) >= 1:
-                # _start_ln = state.search_range_start
-                state.search_range_start = state.cur_ln
-                # log.debug("going forwards (%s->%s:%s)", _start_ln,
-                #           state.search_range_start, state.search_range_end)
-                state.invalid_range.save_and_reset()
-                state.get_next_midpoint()
-                state.update_pos_pointers()
-        else:
-            state.save_last_known_good()
-            state.rc = state.RC_FOUND_GOOD
-            if state.cur_ln == 0:
-                log.debug("first line is valid so assuming same for rest of "
-                          "file")
-                self.fd_info.reset()
-            elif state.search_range_end - state.search_range_start <= 1:
-                log.debug("found final good ln=%s", state.cur_ln)
-                self.fd_info.fd.seek(state.cur_pos)
-            elif (len(state.invalid_range) > 0 and
-                  state.invalid_range.direction == SkipRange.SKIP_FWD):
-                log.debug("found good after skip range")
-                self.fd_info.fd.seek(state.cur_pos)
-            else:
-                # set rc to bad since we are going to a new range
-                state.rc = state.RC_FOUND_BAD
-                # _end_ln = state.search_range_end
-                state.search_range_end = state.cur_ln
-                # log.debug("going backwards (%s:%s->%s)",
-                #           state.search_range_start, _end_ln,
-                #           state.search_range_end)
-                self.fd_info.fd.seek(state.cur_pos)
-                state.invalid_range.save_and_reset()
-                state.get_next_midpoint()
-                state.update_pos_pointers()
+    13:15 AAAAAA\n13:16 BBBBBBB\n13:17 CCCCCC
 
-        return state
+    and assuming __getitem__ is called with offset 19 i.e.
 
-    def _seek_to_first_valid(self, destructive=True):
+    13:15 AAAAAA\n13:16 BBBBBBB\n13:17 CCCCCC
+                        ^19
+
+    The algorithm will first read SEEK_HORIZON bytes forward, starting
+    from offset `19`, and then try to find the first line feed:
+
+    13:15 AAAAAA\n13:16 BBBBBBB\n13:17 CCCCCC
+                        ^19     ^r-lf
+
+    Then the algorithm will seek SEEK_HORIZON bytes backward, starting from
+    offset 19, read SEEK_HORIZON bytes and then try to find the first line feed
+    scanning in reverse:
+
+    13:15 AAAAAA\n13:16 BBBBBBB\n13:17 CCCCCC
+                ^l-lf   ^19     ^r-lf
+
+    Then, the algorithm will extract the characters between l-lf and r-lf
+    to form a line. The line will be checked against the date matcher
+    to extract the date. If the date matcher yields a valid date, __getitem__
+    will return that date. Otherwise, the search will be extended to other
+    nearby lines, prioritising the lines prior to the current, until either of
+    the following is true:
+
+        - a line with a timestamp is found
+        - MAX_*_FALLBACK_LINES has been reached
+    """
+
+    # Number of characters to read while searching
+    SEEK_HORIZON = 256
+
+    # How many times we can expand the search horizon while trying to find a
+    # line feed. This means the search will read SEEK_HORIZON times
+    # MAX_SEEK_HORIZON_EXPAND bytes in total when a line feed character is not
+    # found.
+    MAX_SEEK_HORIZON_EXPAND = 4096
+
+    # Number of lines to search forwards when the algorithm encounters lines
+    # with no date.
+    MAX_TRY_FIND_WITH_DATE_ATTEMPTS = 500
+
+    LINE_FEED_TOKEN = b'\n'
+
+    def __init__(self, fd, c):
+        self.file = fd
+        self.constraint = c
+        self.line_info = None
+        self.found_any_date = False
+        self.lookup_times = 0
+        with NonDestructiveFileRead(self.file) as f:
+            self.length = f.seek(0, 2)
+
+    def find_token_reverse(self, start_offset):
+        r"""Find `token` in `file` starting from `start_offset` and backing off
+        `LogFileDateSinceSeeker.SEEK_HORIZON` bytes on each iteration for
+        maximum of `LogFileDateSinceSeeker.MAX_SEEK_HORIZON_EXPAND` times.
+
+        @param start_offset (int): start offset of search
+
+        @return: SearchState object
         """
-        Find first valid line in file using binary search. By default this is a
-        destructive and will actually seek to the line. If no line is found the
-        descriptor will be at EOF.
+        attempts = LogFileDateSinceSeeker.MAX_SEEK_HORIZON_EXPAND
+        current_offset = -LogFileDateSinceSeeker.SEEK_HORIZON
+        while True:
+            attempts -= 1
+            read_offset = start_offset + current_offset
+            read_offset = read_offset if read_offset > 0 else 0
+            read_size = LogFileDateSinceSeeker.SEEK_HORIZON
+            if start_offset + current_offset <= 0:
+                read_size = read_size + (start_offset + current_offset)
 
-        Returns offset at which valid line was found.
+            self.file.seek(read_offset)
+            chunk = self.file.read(read_size)
+            if not chunk or len(chunk) == 0:
+                # We've reached the start of the file and could not find the
+                # token.
+                return SearchState(status=FindTokenStatus.REACHED_EOF,
+                                   offset=0)
 
-        @param destructive: by default this seek operation is destructive i.e.
-                            it will find the least valid point and stay there.
-                            If that is not desired this can be set to False.
+            chunk_offset = chunk.rfind(self.LINE_FEED_TOKEN)
+
+            if chunk_offset != -1:
+                return SearchState(status=FindTokenStatus.FOUND,
+                                   offset=read_offset + chunk_offset)
+
+            if attempts <= 0:
+                break
+
+            current_offset = current_offset - len(chunk)
+            if (start_offset + current_offset) < 0:
+                return SearchState(status=FindTokenStatus.REACHED_EOF,
+                                   offset=0)
+        log.debug("reached max line length search without finding a line feed")
+        return SearchState(FindTokenStatus.FAILED)
+
+    def find_token(self, start_offset):
+        r"""Find `token` in `file` starting from `start_offset` and moving
+        forward `LogFileDateSinceSeeker.SEEK_HORIZON` bytes on each
+        iteration for maximum of `LogFileDateSinceSeeker.MAX_SEEK_HORIZON_
+        EXPAND` times.
+
+        @param start_offset (int): start offset of search
+
+        @return: SearchState object
         """
-        search_state = BinarySearchState(self.fd_info, self.fd_info.fd.tell())
-        offset = 0
+        attempts = LogFileDateSinceSeeker.MAX_SEEK_HORIZON_EXPAND
+        current_offset = 0
+        # Seek to the initial starting position
+        self.file.seek(start_offset)
+        while attempts > 0:
+            # Read `horizon` bytes from the file.
+            chunk = self.file.read(LogFileDateSinceSeeker.SEEK_HORIZON)
 
-        # check first line before going ahead with full search which requires
-        # generating file markers that is expensive for large files.
-        if self._check_line(search_state) == search_state.next_pos:
-            self.fd_info.reset()
-            log.debug("first line is valid so assuming same for rest of "
-                      "file")
-            log.debug("seek %s finished (skipped %d lines) current_pos=%s, "
-                      "offset=%s iterations=%s",
-                      self.fd_info.fd.name, offset,
-                      self.fd_info.fd.tell(), offset, self.fd_info.iterations)
+            if not chunk or len(chunk) == 0:
+                # Reached end of file
+                return SearchState(status=FindTokenStatus.REACHED_EOF,
+                                   offset=len(self))
 
-            return offset
+            chunk_offset = chunk.find(self.LINE_FEED_TOKEN)
+            if chunk_offset != -1:
+                # We've found the token in the chunk.
+                # As the chunk_offset is a relative offset to the chunk
+                # translate it to file offset while returning.
+                return SearchState(status=FindTokenStatus.FOUND,
+                                   offset=(start_offset + current_offset +
+                                           chunk_offset))
+            # We failed to find the token in the chunk.
+            # Progress the current offset forward by
+            # chunk's length.
+            current_offset = current_offset + len(chunk)
+            attempts -= 1
+        # Exhausted all the attempts and found nothing.
+        log.debug("reached max line length search without finding a line feed")
+        return SearchState(FindTokenStatus.FAILED)
 
-        log.debug("first line is not valid - checking rest of file")
-        self.fd_info.reset()
-        search_state.start()
-        num_lines = len(self.fd_info.markers)
-        if num_lines > 0:
-            while True:
-                if search_state.cur_ln >= num_lines:
-                    log.debug("reached eof - no more lines to check")
-                    break
+    def try_find_line(self, epicenter, slf_off=None, elf_off=None):
+        r"""Try to find a line at `epicenter`. This function allows extracting
+        the corresponding line from a file offset. "Line" is a string between
+        two line feed characters i.e.;
 
-                self.fd_info.iterations += 1
-                search_state = self._seek_next(search_state)
-                if search_state.rc == search_state.RC_ERROR:
-                    offset = 0
-                    self.fd_info.reset()
-                    break
+        - \nThis is a line\n
 
-                if (search_state.search_range_end -
-                        search_state.search_range_start) < 1:
-                    # we've reached the end of all ranges but the result in
-                    # undetermined.
-                    if search_state.rc != search_state.RC_FOUND_BAD:
-                        self.fd_info.reset()
-                        offset = 0
-                    else:
-                        offset = search_state.cur_ln
+        ... except when the line starts at the start of the file or ends at the
+        end of the file, where SOF/EOF are also accepted as line start/end:
 
-                    break
+        - This is line at SOF\n
+        - \nThis is a line at EOF
 
-                # log.debug(search_state)
-                if search_state.rc == search_state.RC_FOUND_GOOD:
-                    # log.debug("seek ended at offset=%s", search_state.cur_ln)
-                    offset = search_state.cur_ln
-                    break
+        Assume that we have the following file content:
 
-                if search_state.rc == search_state.RC_SKIPPING:
-                    if ((search_state.cur_ln >= search_state.search_range_end)
-                            and (len(search_state.invalid_range) ==
-                                 search_state.search_range_end)):
-                        # offset and pos should still be SOF so we
-                        # make this the same
-                        search_state.cur_ln = 0
-                        self.fd_info.reset()
-                        break
+        11.01.2023 fine\n11.01.2023 a line\n11.01.2023 another line
 
-                if self.fd_info.iterations >= len(self.fd_info.markers):
-                    log.warning("exiting seek loop since limit reached "
-                                "(eof=%s)", self.fd_info.eof_pos)
-                    offset = 0
-                    self.fd_info.reset()
-                    break
-        else:
-            log.debug("file %s is empty", self.fd_info.fd.name)
+        We have a file with three lines in above, and the offsets for these
+        lines would be:
 
-        if not destructive:
-            self.fd_info.fd.reset()
+        -----------------------------------------------------
+        Line  |                Line               | Line    |
+        Nr.   |                Text               | Offsets |
+        -----------------------------------------------------
+        #0:   | "11.01.2023 fine"                 | [0,14]  |
+        #1:   | "11.01.2023 a line"               | [16,33] |
+        #2:   | "11.01.2023 another line"         | [35,58] |
 
-        log.debug("seek %s finished (skipped %d lines) current_pos=%s, "
-                  "offset=%s iterations=%s",
-                  self.fd_info.fd.name, offset,
-                  self.fd_info.fd.tell(), offset, self.fd_info.iterations)
+        The function `try_find_line_w_date` would return the following for
+        the calls:
 
-        return offset
+        (0)  -> (11.01.2023,0-14)
+        (7)  -> (11.01.2023,0-14)
+        (18) -> (11.01.2023,16-33)
+        (47) -> (11.01.2023,35-58)
+
+        This function will try to locate first line feed characters from both
+        left and right side of the position `epicenter`. Assume the file
+        content we have above, and we want to extract the line at offset `18`,
+        which corresponds to the first dot `.` of date of the line #1:
+
+        11.01.2023 fine\n11.01.2023 a line\n11.01.2023 another line
+                           ^epicenter
+
+        The function will try to form a line by first searching for the first
+        line feed character in the left (slf) (if slf_off is None):
+
+        11.01.2023 fine\n11.01.2023 a line\n11.01.2023 another line
+                       ^slf^epicenter
+
+        and then the same for the right (elf) (if elf_off is None):
+
+        11.01.2023 fine\n11.01.2023 a line\n11.01.2023 another line
+                       ^slf^epicenter     ^elf
+
+        The function will then extract the string between the `slf` and `elf`,
+        which yields the string "11.01.2023 a line".
+
+        The function will either return a valid LogLine object, or raise an
+        exception.
+
+        @param epicenter: Search start offset
+        @param slf_off: Optional starting line feed offset, if known. Defaults
+                        to None.
+        @param elf_off: Optional ending line feed offset, if known. Defaults to
+                        None.
+
+        @raise ValueError: when ending line feed offset could not be found or
+                           when starting line feed offset could not be found.
+
+        @return: found logline
+        """
+        log.debug("    > EPICENTER: %d", epicenter)
+
+        # Find the first LF token from the right of the epicenter
+        # e.g. \nThis is a line\n
+        #         ^epicenter    ^line end lf
+        line_end_lf = self.find_token(
+            epicenter
+        ) if elf_off is None else SearchState(
+            FindTokenStatus.FOUND, elf_off)
+
+        if line_end_lf.status == FindTokenStatus.FAILED:
+            raise ValueError("Could not find ending line feed "
+                             f"offset at epicenter {epicenter}")
+
+        # Find the first LF token from the left of the epicenter
+        # e.g.          \nThis is a line\n
+        # line start lf  ^ ^epicenter
+        line_start_lf = self.find_token_reverse(
+            epicenter
+        ) if slf_off is None else SearchState(
+            FindTokenStatus.FOUND, slf_off)
+
+        if line_start_lf.status == FindTokenStatus.FAILED:
+            raise ValueError("Could not find start line feed "
+                             f"offset at epicenter {epicenter}")
+
+        # Ensure that found offsets are in file range
+        assert line_start_lf.offset <= len(self)
+        assert line_start_lf.offset >= 0
+        assert line_end_lf.offset <= len(self)
+        assert line_end_lf.offset >= 0
+        # Ensure that end lf offset is >= start lf offset
+        assert line_end_lf.offset >= line_start_lf.offset
+
+        return LogLine(file=self.file, constraint=self.constraint,
+                       line_start_lf=line_start_lf, line_end_lf=line_end_lf)
+
+    def try_find_line_with_date(self, start_offset, line_feed_offset=None,
+                                forwards=True):
+        r"""Try to fetch a line with date, starting from `start_offset`.
+
+        The algorithm will try to fetch a new line searching for a valid date
+        for a maximum of `attempts` times. The lines will be fetched from
+        either prior or after `start_offset`, depending on the value of the
+        `forwards` parameter.
+
+        If `prev_offset` parameter is used, the value will be used as either
+        fwd_line_feed or rwd_line_feed position depending on the value of the
+        `forwards` parameter.
+
+        @param start_offset: Where to begin searching
+        @param line_feed_offset: Offset of the fwd_line_feed, or rwd_line_feed
+                                 if known. Defaults to None.
+        @param forwards: Search forwards, or backwards. Defaults to True
+                         (forwards).
+
+        @return: line if found otherwise None.
+        """
+        attempts = LogFileDateSinceSeeker.MAX_TRY_FIND_WITH_DATE_ATTEMPTS
+        offset = start_offset
+        log_line = None
+        while attempts > 0:
+            log_line = self.try_find_line(
+                offset,
+                (None, line_feed_offset)[forwards],
+                (None, line_feed_offset)[not forwards]
+            )
+
+            log.debug(
+                "    > TRY_FETCH, REMAINING_ATTEMPTS:%d, START_LF_OFFSET: %d, "
+                "END_LF_OFFSET: %d >: on line -> %s",
+                attempts,
+                log_line.start_lf.offset,
+                log_line.end_lf.offset,
+                log_line.text,
+            )
+
+            # If the line has a valid date, return it.
+            if log_line.date:
+                return log_line
+
+            # Set offset of the found line feed
+            line_feed_offset = (log_line.start_lf,
+                                log_line.end_lf)[forwards].offset
+            # Set the next search starting point
+            offset = line_feed_offset + (-1, +1)[forwards]
+            if offset < 0 or offset > len(self):
+                log.debug("    > TRY_FETCH EXIT EOF/SOF")
+                break
+
+            attempts -= 1
+        return None
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, offset):
+        r"""Find the nearest line with a date at `offset` and return its date.
+
+        To illustrate how this function works, let's assume that we have a file
+        with the contents as follows:
+
+        line\n01.01.1970 line\nthisisaline\nthisisline2\n01.01.1970 thisisline3
+
+        -----------------------------------------------------------------------
+        For a lookup at offset `13`:
+
+        line\n01.01.1970 line\nthisisaline\nthisisline2\n01.01.1970 thisisline3
+                      ^ offset(13)
+              |--------------|
+                             ^try_find_line_with_date(bwd, itr #1)
+
+        The function will first call ^try_find_line_with_date, which will yield
+        `01.01.1970 line` in turn. As the line contains a date, the return
+        value will be datetime("01.01.1970")
+        -----------------------------------------------------------------------
+        For a lookup at offset `25`:
+
+        line\n01.01.1970 line\nthisisaline\nthisisline2\n01.01.1970 thisisline3
+                                   ^ offset(25)
+                               |---------|
+                                         ^try_find_line_with_date(bwd, itr #1)
+              |--------------|
+                             ^try_find_line_with_date(bwd, itr #2)
+
+        The function will first call try_find_line, which will yield
+        `thisisaline` in turn. As the line does not contain a valid date, the
+        function will perform a backwards search to find first line that
+        contains a date by caling `try_find_line_with_date`, which will yield
+        the line
+        "01.01.1970 line", which contains a valid date, and the return value
+        will be datetime("01.01.1970").
+        -----------------------------------------------------------------------
+        For a lookup at offset `35`:
+
+        line\n01.01.1970 line\nthisisaline\nthisisline2\n01.01.1970 thisisline3
+                                              ^ offset(35)
+                                            |---------|
+                                                      ^try_find_line_with_date
+                                                       (bwd,itr #1)
+                               |---------|
+                                         ^try_find_line_with_date(bwd, itr #2)
+              |--------------|
+                             ^try_find_line_with_date(bwd, itr #3)
+
+        The function will first call try_find_line, which will yield
+        `thisisaline2` in turn. As the line does not contain a valid
+        date, the function will perform a backwards search to find first
+        line that contains a date by caling `try_find_line_with_date`,
+        which will yield the line "01.01.1970 line", (notice that it'll
+        skip line `thisisaline`) which contains a valid date, and the return
+        value will be datetime("01.01.1970").
+        -----------------------------------------------------------------------
+        For a lookup at offset `3`:
+
+        line\n01.01.1970 line\nthisisaline\nthisisline2\n01.01.1970 thisisline3
+           ^ offset(3)
+        |--|
+           ^try_find_line_with_date(bwd, itr #1)
+              |-------------|
+                            ^try_find_line_with_date(fwd, itr #1)
+
+        The function will first call try_find_line_with_date, which will yield
+        `line` in turn. As the line does not contain a valid date, the
+        function will perform a backwards search to find first line that
+        contains a date by caling `try_find_line_with_date`, which will
+        fail since there'is no more lines before the line. The function
+        will then perform a forwards search to find first line with a date
+        by calling `try_find_line_with_date` in forwards search mode, which
+        will yield `01.01.1970 line` in turn,  which contains a valid date,
+        and the return value will be datetime("01.01.1970").
+
+        This function is intended to be used with bisect.bisect*
+        functions, so therefore it only returns the `date` for
+        the comparison.
+
+        @param offset: integer lookup offset
+        @raise DateNotFoundInLine: When a line with a date could not
+                                   be found.
+        @return: Date of the line at `offset`
+        """
+
+        self.lookup_times += 1
+        log.debug("-------------------------------------------")
+        log.debug("-------------------------------------------")
+        log.debug("-------------------------------------------")
+        log.debug("-------------------------------------------")
+        log.debug("LOOKUP (#%d) AT OFFSET: %d", self.lookup_times, offset)
+        result = None
+
+        # Try to search backwards first.
+        # First call will effectively be a regular forward search given
+        # that we're not passing a line feed offset to the function.
+        # Any subsequent search attempt will be made backwards.
+        log.debug("######### BACKWARDS SEARCH START #########")
+        result = self.try_find_line_with_date(
+            offset,
+            None,
+            False,
+        )
+        log.debug("######### BACKWARDS SEARCH END #########")
+
+        # ... then, forwards.
+        if not result or result.date is None:
+            log.debug("######### FORWARDS SEARCH START #########")
+            result = self.try_find_line_with_date(offset + 1, offset, True)
+
+            log.debug("######### FORWARDS SEARCH END #########")
+
+        if not result or result.date is None:
+            raise DateNotFoundInLine(
+                f"Date search failed at offset `{offset}`")
+
+        # This is mostly for diagnostics. If we could not find
+        # any valid date in given file, we throw a specific exception
+        # to indicate that.
+
+        self.found_any_date = True
+        if result.date >= self.constraint._since_date:
+            # Keep the matching line so we can access it
+            # after the bisect without having to perform another
+            # lookup.
+            self.line_info = result
+
+        log.debug(
+            "    > EXTRACTED_DATE: `%s` >= SINCE DATE: `%s` == %s",
+            result.date,
+            self.constraint._since_date,
+            (result.date >= self.constraint._since_date)
+            if result.date else False,
+        )
+        return result.date
+
+    def run(self):
+        # bisect_left will give us the first occurenct of the date
+        # that satisfies the constraint.
+        # Similarly, bisect_right would allow the last occurence of
+        # a date that satisfies the criteria.
+
+        try:
+            bisect.bisect_left(self, self.constraint._since_date)
+        except DateNotFoundInLine as exc:
+            if not self.found_any_date:
+                raise ValidFormattedDateNotFound from exc
+
+            raise
+
+        if not self.line_info:
+            raise ValidLinesNotFound
+
+        log.debug(
+            "RUN END, FOUND LINE(START:%d, END:%d, CONTENT:%s)"
+            " IN %d LOOKUP(S)",
+            self.line_info.start_offset,
+            self.line_info.end_offset,
+            self.line_info.text,
+            self.lookup_times
+        )
+
+        return (self.line_info.start_offset, self.line_info.end_offset)
 
 
 class SearchConstraintSearchSince(BinarySeekSearchBase):
@@ -730,7 +831,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
     def extracted_datetime(self, line):
         if type(line) == bytes:
             # need this for e.g. gzipped files
-            line = line.decode("utf-8")
+            line = line.decode("utf-8", errors='backslashreplace')
 
         if self.ts_matcher_cls:
             timestamp = self.ts_matcher_cls(line)
@@ -802,35 +903,47 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         return ret
 
     def apply_to_file(self, fd, destructive=True):
-        self.fd_info = SeekInfo(fd, cache_path=self.cache_path)
         if not self._is_valid:
             log.warning("c:%s unable to apply constraint to %s", self.id,
                         fd.name)
             return
 
-        # indexing files larger than this takes too long and is too resource
-        # intensive so best to fall back to per-line check.
-        if os.path.getsize(fd.name) >= FileMarkers.INDEX_FSIZE_LIMIT:
-            log.debug("s:%s: file %s too big to perform binary search - "
-                      "skipping", self.id, fd.name)
-            return
-
         if fd.name in self._results:
+            log.debug("ret cached")
             return self._results[fd.name]
 
         log.debug("c:%s: starting binary seek search to %s in file %s "
                   "(destructive=True)", self.id, self._since_date, fd.name)
-        self._results[fd.name] = self._seek_to_first_valid(destructive)
-        log.debug("c:%s: finished binary seek search in file %s", self.id,
-                  fd.name)
+        try:
+            seeker = LogFileDateSinceSeeker(fd, self)
+            result = seeker.run()
+            fd.seek(result[0] if result and destructive else 0)
+
+            if not result or result[0] == len(seeker):
+                self._results[fd.name] = None
+            else:
+                self._results[fd.name] = result[0]
+        except ValidFormattedDateNotFound:
+            log.debug("c:%s No timestamp found in file", self.id)
+            fd.seek(0)
+            return fd.tell()
+        except ValidLinesNotFound:
+            log.debug("c:%s No date after found in file", self.id)
+            fd.seek(0, 2)
+            return fd.tell()
+        except DateNotFoundInLine as ed:
+            log.debug("c:%s Expanded date search failed for a line: %s",
+                      self.id, ed)
+            fd.seek(0)
+            return fd.tell()
+
+        log.debug("c:%s: finished binary seek search in file %s, offset %d",
+                  self.id, fd.name, self._results[fd.name])
         return self._results[fd.name]
 
     def stats(self):
         _stats = {'line': {'pass': self._line_pass,
                            'fail': self._line_fail}}
-        if self.fd_info:
-            _stats['file'] = {'name': self.fd_info.fd.name,
-                              'iterations': self.fd_info.iterations}
         return _stats
 
     def __repr__(self):
