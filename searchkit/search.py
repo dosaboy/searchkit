@@ -459,8 +459,9 @@ class SearchResult(SearchResultBase):
             for i in range(1, num_groups + 1):
                 self._save_part(i, result.group(i))
         else:
-            log.debug("saving full search result which can lead to high "
-                      "memory usage")
+            log.debug("Saving full search result is inefficient and can lead "
+                      "to high memory usage. Use sub groups if possible. "
+                      "(tag=%s)", self.tag)
             self._save_part(0, result.group(0))
 
     @cached_property
