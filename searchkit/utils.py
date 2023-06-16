@@ -1,9 +1,9 @@
 import abc
+import dbm
 import fasteners
 import os
 import shelve
 import time
-import _gdbm
 
 from contextlib import ContextDecorator
 from functools import cached_property
@@ -157,7 +157,7 @@ class MPCacheSharded(MPCacheBase):
                 try:
                     self._dbs[idx] = shelve.open(path)
                     break
-                except _gdbm.error:
+                except dbm.gnu.error:
                     log.debug("error opening cache %s - sleeping 10s then "
                               "retrying (attempt %s/%s)", path, attempt,
                               self.max_open_retry)
