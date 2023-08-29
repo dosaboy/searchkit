@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 import logging
 
-log = logging.getLogger()
+log = logging.getLogger('searchkit')
 
 
 def setup_logging(level):
