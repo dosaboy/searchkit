@@ -791,12 +791,15 @@ class SearchCatalog(object):
 class SearchTask(object):
 
     def __init__(self, info, constraints_manager, results_queue,
-                 results_store):
+                 results_store, decode_errors=None):
         self.info = info
         self.stats = SearchTaskStats()
         self.constraints_manager = constraints_manager
         self.results_queue = results_queue
         self.results_store = results_store
+        self.decode_kwargs = {}
+        if decode_errors:
+            self.decode_kwargs['errors'] = decode_errors
 
     @cached_property
     def id(self):
@@ -986,8 +989,7 @@ class SearchTask(object):
                 log.debug("%s lines searched in %s", ln, fd.name)
 
             self.stats['lines_searched'] += 1
-            if type(line) == bytes:
-                line = line.decode("utf-8")
+            line = line.decode("utf-8", **self.decode_kwargs)
 
             for s_def in self.search_defs:
                 if not runnable[s_def.id]:
@@ -1043,10 +1045,8 @@ class SearchTask(object):
                     with open(path, 'rb') as fd:
                         stats = self._run_search(fd)
         except UnicodeDecodeError:
-            log.exception("")
-            # ignore the file if it can't be decoded
-            log.debug("caught UnicodeDecodeError for path %s - skipping",
-                      path)
+            log.exception("caught UnicodeDecodeError while searching %s", path)
+            raise
         except EOFError as e:
             log.exception("")
             msg = ("an exception occurred while searching {} - {}".
@@ -1162,7 +1162,7 @@ class SearchConstraintsManager(object):
 class FileSearcher(SearcherBase):
 
     def __init__(self, max_parallel_tasks=8, max_logrotate_depth=7,
-                 constraint=None):
+                 constraint=None, decode_errors=None):
         """
         @param max_parallel_tasks: max number of search tasks that can run in
                                    parallel.
@@ -1172,11 +1172,16 @@ class FileSearcher(SearcherBase):
                                     much history we search.
         @param constraint: constraint to be used with this
                                    searcher that applies to all files searched.
+        @param decode_errors: unicode decode error handling. This usually
+                              defaults to "strict". See
+                              https://docs.python.org/3/howto/unicode.html
+                              for more options.
         """
         self.max_parallel_tasks = max_parallel_tasks
         self._stats = SearchTaskStats()
         self.catalog = SearchCatalog(max_logrotate_depth)
         self.constraints_manager = SearchConstraintsManager(self.catalog)
+        self.decode_errors = decode_errors
         if constraint:
             self.constraints_manager.global_constraints.append(constraint)
 
@@ -1330,7 +1335,8 @@ class FileSearcher(SearcherBase):
             task = SearchTask(info,
                               constraints_manager=self.constraints_manager,
                               results_queue=queue,
-                              results_store=results_store)
+                              results_store=results_store,
+                              decode_errors=self.decode_errors)
             self.stats.update(task.execute())
 
         self.stats['jobs_completed'] = 1
@@ -1357,7 +1363,8 @@ class FileSearcher(SearcherBase):
                     task = SearchTask(info,
                                       constraints_manager=c_mgr,
                                       results_queue=queue,
-                                      results_store=results_store)
+                                      results_store=results_store,
+                                      decode_errors=self.decode_errors)
                     job = executor.submit(task.execute)
                     jobs[job] = info['path']
                     self.stats['total_jobs'] += 1

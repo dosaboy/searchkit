@@ -954,3 +954,24 @@ class TestSearchKit(TestSearchKitBase):
         self.assertEqual(sri.get(1), 'bar')
         self.assertEqual(sri.get(2), None)
         self.assertEqual(sri.num_deduped, 1)
+
+    def test_search_unicode_decode_w_error(self):
+        f = FileSearcher()
+        with tempfile.TemporaryDirectory() as dtmp:
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'wb') as fd:
+                fd.write(b'\xe2')
+
+            f.add(SearchDef(r'(.+)', tag='simple'), fpath)
+            with self.assertRaises(UnicodeDecodeError):
+                f.run()
+
+    def test_search_unicode_decode_no_error(self):
+        f = FileSearcher(decode_errors='backslashreplace')
+        with tempfile.TemporaryDirectory() as dtmp:
+            fpath = os.path.join(dtmp, 'f1')
+            with open(fpath, 'wb') as fd:
+                fd.write(b'\xe2')
+
+            f.add(SearchDef(r'(.+)', tag='simple'), fpath)
+            f.run()
