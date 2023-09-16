@@ -13,10 +13,10 @@ from searchkit.constraints import (
     SearchConstraintSearchSince,
     FindTokenStatus,
     SearchState,
-    InvalidSearchState,
-    ValidFormattedDateNotFound,
-    ValidLinesNotFound,
-    NonDestructiveFileRead,
+    NoValidFormattedDateFound,
+    MaxSearchableLineLengthReached,
+    NoValidLinesFound,
+    SavedFilePosition,
     LogLine,
     LogFileDateSinceSeeker,
 )
@@ -34,8 +34,7 @@ LOGS_W_TS = """2022-01-01 00:00:00.00 L0
 2022-01-01 01:00:00.00 L1
 2022-01-02 00:00:00.00 L2
 2022-01-02 01:00:00.00 L3
-2022-01-03 00:00:00.00 L4
-"""
+2022-01-03 00:00:00.00 L4"""
 
 LOGS_W_TS_AND_UNMATCABLE_LINES = """blah 1
 2022-01-01 00:00:00.00 L0
@@ -148,7 +147,7 @@ class TestSearchKitBase(utils.BaseTestCase):
 class TestSearchConstraints(TestSearchKitBase):
 
     @utils.create_files({'f1': LOGS_W_TS})
-    def test_binary_search(self):
+    def test_binary_search_1(self):
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
@@ -156,6 +155,14 @@ class TestSearchConstraints(TestSearchKitBase):
                                         ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'rb') as fd:
             self.assertEqual(c.apply_to_file(fd), 0)
+
+        stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 2}
+        self.assertEqual(c.stats(), stats)
+
+    @utils.create_files({'f1': LOGS_W_TS})
+    def test_binary_search_2(self):
+        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        _file = os.path.join(self.data_root, 'f1')
 
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
@@ -166,6 +173,13 @@ class TestSearchConstraints(TestSearchKitBase):
         with open(_file, 'rb') as fd:
             self.assertEqual(c.apply_to_file(fd), 9)
 
+        stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 19}
+        self.assertEqual(c.stats(), stats)
+
+    @utils.create_files({'f1': LOGS_W_TS})
+    def test_binary_search_3(self):
+        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
@@ -176,6 +190,13 @@ class TestSearchConstraints(TestSearchKitBase):
             offset = c.apply_to_file(fd)
             self.assertEqual(offset, 4491)
 
+        stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 6515}
+        self.assertEqual(c.stats(), stats)
+
+    @utils.create_files({'f1': LOGS_W_TS})
+    def test_binary_search_4(self):
+        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
@@ -186,6 +207,9 @@ class TestSearchConstraints(TestSearchKitBase):
             offset = c.apply_to_file(fd)
             self.assertEqual(offset, 0)
 
+        stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 0}
+        self.assertEqual(c.stats(), stats)
+
 
 class TestSearchState(TestSearchKitBase):
 
@@ -194,25 +218,18 @@ class TestSearchState(TestSearchKitBase):
         self.assertEqual(uut.status, FindTokenStatus.FOUND)
         self.assertEqual(uut.offset, 15)
 
-    def test_construct_failed(self):
-        uut = SearchState(FindTokenStatus.FAILED, 15)
-        self.assertEqual(uut.status, FindTokenStatus.FAILED)
-
-        with self.assertRaises(InvalidSearchState):
-            uut.offset
-
     def test_construct_reached_eof(self):
         uut = SearchState(FindTokenStatus.REACHED_EOF, 15)
         self.assertEqual(uut.status, FindTokenStatus.REACHED_EOF)
         self.assertEqual(uut.offset, 15)
 
 
-class TestNonDestructiveFileRead(TestSearchKitBase):
+class TestSavedFilePosition(TestSearchKitBase):
 
     def test_peek(self):
         mock_file = mock.MagicMock()
         mock_file.tell.return_value = 0xBADC0DE
-        with NonDestructiveFileRead(mock_file):
+        with SavedFilePosition(mock_file):
             pass
         mock_file.seek.assert_called_once_with(0xBADC0DE)
 
@@ -299,8 +316,8 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
         # Expectation: find_token_reverse should give up the search and
         # status should be `failed`
-        result = uut.find_token_reverse(self.max_line_length + 257)
-        self.assertEqual(result.status, FindTokenStatus.FAILED)
+        with self.assertRaises(MaxSearchableLineLengthReached):
+            uut.find_token_reverse(self.max_line_length + 257)
 
     def test_find_token(self):
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
@@ -323,8 +340,8 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
         # Expectation: there is one LF between [0,100], status should be FOUND
         # and offset should be `78`
-        result = uut.find_token(100000)
-        self.assertEqual(result.status, FindTokenStatus.FAILED)
+        with self.assertRaises(MaxSearchableLineLengthReached):
+            uut.find_token(100000)
 
     def test_try_find_line_slf_is_eof(self):
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
@@ -385,19 +402,21 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_try_find_line_elf_failed(self):
         self.mock_file.read.side_effect = lambda n: bytes(('A' * n).encode())
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
-        with self.assertRaises(ValueError) as rexc:
+        with self.assertRaises(MaxSearchableLineLengthReached) as rexc:
             uut.try_find_line(83)
-        self.assertEqual(str(rexc.exception), "Could not find ending line"
-                                              " feed offset at epicenter 83")
+            self.assertEqual(str(rexc.exception),
+                             "Could not find ending line feed offset at "
+                             "epicenter 83")
 
     def test_try_find_line_slf_failed(self):
         contents = ('A' * ((self.max_line_length * 2) - 1)) + '\n'
         self.bio = BytesIO(bytes(contents.encode()))
         uut = LogFileDateSinceSeeker(self.mock_file, self.mock_constraint)
-        with self.assertRaises(ValueError) as rexc:
+        with self.assertRaises(MaxSearchableLineLengthReached) as rexc:
             uut.try_find_line(self.max_line_length)
-        self.assertEqual(str(rexc.exception), "Could not find start line feed "
-                                              "offset at epicenter 1048576")
+            self.assertEqual(str(rexc.exception),
+                             "Could not find start line feed offset at "
+                             "epicenter 1048576")
 
     def test_try_find_line_w_constraint(self):
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
@@ -588,7 +607,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
-        self.assertEqual(result, (0, 77))
+        self.assertEqual(result, 0)
 
     def test_run_2(self):
         self.constraint = SearchConstraintSearchSince(
@@ -597,7 +616,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
-        self.assertEqual(result, (4653, 4787))
+        self.assertEqual(result, 4653)
 
     def test_run_3(self):
         self.constraint = SearchConstraintSearchSince(
@@ -606,7 +625,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
-        self.assertEqual(result, (4919, 5014))
+        self.assertEqual(result, 4919)
 
     def test_run_4(self):
         self.constraint = SearchConstraintSearchSince(
@@ -615,7 +634,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
-        self.assertEqual(result, (4919, 5014))
+        self.assertEqual(result, 4919)
 
     def test_run_before(self):
         self.constraint = SearchConstraintSearchSince(
@@ -624,7 +643,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
-        self.assertEqual(result, (0, 77))
+        self.assertEqual(result, 0)
 
     def test_run_no_such_date(self):
         self.constraint = SearchConstraintSearchSince(
@@ -632,7 +651,7 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
-        with self.assertRaises(ValidLinesNotFound):
+        with self.assertRaises(NoValidLinesFound):
             uut.run()
 
     def test_run_no_date_found(self):
@@ -642,5 +661,5 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
             cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
-        with self.assertRaises(ValidFormattedDateNotFound):
+        with self.assertRaises(NoValidFormattedDateFound):
             uut.run()
