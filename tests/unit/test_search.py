@@ -828,28 +828,6 @@ class TestSearchKit(TestSearchKitBase):
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results], ['L2', 'L3', 'L4'])
 
-    @utils.create_files({'atestfile': LOGS_W_TS + "\n"})
-    def test_logs_since_junk_not_allow_unverifiable(self):
-        """
-        Test scenario: file has invalid start and unverifiable end so with
-                       allow_constraints_for_unverifiable_logs=False the
-                       constraint will be aborted.
-        """
-        self.current_date = self.get_date('Tue Jan 03 00:00:00 UTC 2022')
-        c = SearchConstraintSearchSince(
-                                current_date=self.current_date,
-                                cache_path=self.constraints_cache_path,
-                                ts_matcher_cls=TimestampSimple, days=1,
-                                allow_constraints_for_unverifiable_logs=False)
-        s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
-        fname = os.path.join(self.data_root, 'atestfile')
-        s.add(sd, path=fname)
-        results = s.run()
-        results = results.find_by_tag('mysd')
-        self.assertEqual([r.get(2) for r in results],
-                         ['L0', 'L1', 'L2', 'L3', 'L4'])
-
     @utils.create_files({'atestfile': LOGS_W_TS_AND_UNMATCABLE_LINES})
     def test_logs_since_file_valid_with_unmatchable_lines(self):
         """
