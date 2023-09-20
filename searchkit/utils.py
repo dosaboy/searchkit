@@ -81,9 +81,27 @@ class MPCacheSimple(MPCacheBase):
         """ noop. """
 
     def get(self, key):
+        """
+        Python shelve is not MP safe so if two processes try to access the same
+        cache at once only one will succeed. We retry a fixed number of times
+        and bail if not successful.
+        """
+        max_open_retry = 10
         with self.cache_lock:
-            with shelve.open(os.path.join(self.cache_base_path, key)) as db:
-                return db.get('0')
+            path = os.path.join(self.cache_base_path, key)
+            attempt = 0
+            while True:
+                try:
+                    with shelve.open(path) as db:
+                        return db.get('0')
+                except dbm.gnu.error:
+                    log.debug("error opening cache %s - sleeping 10s then "
+                              "retrying (attempt %s/%s)", path, attempt,
+                              max_open_retry)
+                    time.sleep(10)
+                    attempt += 1
+                    if attempt > max_open_retry:
+                        raise
 
     def bulk_set(self, data):
         with self.cache_lock:
@@ -116,85 +134,3 @@ class MPCacheSimple(MPCacheBase):
 # this is the default type
 class MPCache(MPCacheSimple):
     pass
-
-
-class MPCacheSharded(MPCacheBase):
-    """
-    This cache will distribute key/values across a number of shards each of
-    which being an independent shelve db. Currently has a requirement that keys
-    be integers.
-    """
-    def __init__(self, *args, shards=64, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.num_shards = shards
-        self.max_open_retry = 10
-        self._dbs = {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        self.close()
-
-    def close(self):
-        for i in range(self.num_shards):
-            if i not in self._dbs:
-                continue
-
-            self._dbs[i].close()
-
-    def _get_db(self, key):
-        """
-        Python shelve is not MP safe so if two processes try to access the same
-        cache at once only one will succeed. We retry a fixed number of times
-        and bail if not successful.
-        """
-        idx = key % self.num_shards
-        if idx not in self._dbs:
-            path = os.path.join(self.cache_base_path, str(idx))
-            attempt = 0
-            while True:
-                try:
-                    self._dbs[idx] = shelve.open(path)
-                    break
-                except dbm.gnu.error:
-                    log.debug("error opening cache %s - sleeping 10s then "
-                              "retrying (attempt %s/%s)", path, attempt,
-                              self.max_open_retry)
-                    time.sleep(10)
-                    attempt += 1
-                    if attempt > self.max_open_retry:
-                        raise
-
-        return self._dbs[idx]
-
-    def get(self, key):
-        with self.cache_lock:
-            return self._get_db(key).get(str(key))
-
-    def bulk_set(self, data):
-        with self.cache_lock:
-            for k, v in data.items():
-                self._get_db(k)[str(k)] = v
-
-    def set(self, key, value):
-        with self.cache_lock:
-            self._get_db(key)[str(key)] = value
-
-    def unset(self, key):
-        with self.cache_lock:
-            del self._get_db(key)[str(key)]
-
-    def __iter__(self):
-        with self.cache_lock:
-            for i in range(self.num_shards):
-                for value in self._get_db(i).values():
-                    yield value
-
-    def __len__(self):
-        with self.cache_lock:
-            sum = 0
-            for i in range(self.num_shards):
-                sum += len(self._get_db(i))
-
-            return sum

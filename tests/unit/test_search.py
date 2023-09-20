@@ -136,11 +136,9 @@ class TestSearchKitBase(utils.BaseTestCase):
         super().setUp()
         self.current_date = self.get_date("Thu Feb 10 16:19:17 UTC 2022")
         self.data_root = tempfile.mkdtemp()
-        self.constraints_cache_path = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self.data_root)
-        shutil.rmtree(self.constraints_cache_path)
         super().tearDown()
 
 
@@ -693,7 +691,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Wed Jan 10 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd',
@@ -711,7 +708,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Wed Jan 1 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd',
@@ -730,7 +726,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -747,7 +742,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -765,7 +759,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 15 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -782,7 +775,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -800,7 +792,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -818,7 +809,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 03 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=1)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -835,7 +825,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
@@ -853,7 +842,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"(.+)", tag='mysd')
@@ -873,7 +861,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
         sd = SearchDef(r"(.+)", tag='mysd')
@@ -891,7 +878,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
         s = FileSearcher(constraint=c)
@@ -909,7 +895,6 @@ class TestSearchKit(TestSearchKitBase):
         """
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
         s = FileSearcher()

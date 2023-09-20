@@ -113,9 +113,6 @@ class BinarySeekSearchBase(ConstraintBase):
     given condition.
     """
 
-    def __init__(self, allow_constraints_for_unverifiable_logs=True):
-        self.allow_unverifiable_logs = allow_constraints_for_unverifiable_logs
-
     @abc.abstractmethod
     def extracted_datetime(self, line):
         """
@@ -813,8 +810,8 @@ class LogFileDateSinceSeeker(object):
 
 class SearchConstraintSearchSince(BinarySeekSearchBase):
 
-    def __init__(self, current_date, cache_path, exprs=None,
-                 ts_matcher_cls=None, days=0, hours=24, **kwargs):
+    def __init__(self, current_date, ts_matcher_cls, days=0, hours=24,
+                 **kwargs):
         """
         A search expression is provided that allows us to identify a datetime
         on each line and check whether it is within a given time period. The
@@ -824,18 +821,12 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         of hours.
 
         @param current_date: cli.date(format="+{}".format(self.date_format))
-        @param cache_path: [DEPRECATED] path to location where we can create an
-                           MPCache
-        @param exprs: [DEPRECATED] a list of search/regex expressions used to
-                      identify a date/time in. This is deprecated, use
-                      ts_matcher_cls.
         @param ts_matcher_cls: TimestampMatcherBase implementation used to
                                match timestamps at start if lines.
         @param days: override default period with number of days
         @param hours: override default period with number of hours
         """
         super().__init__(**kwargs)
-        self.cache_path = cache_path
         self.ts_matcher_cls = ts_matcher_cls
         if ts_matcher_cls:
             self.date_format = ts_matcher_cls.DEFAULT_DATETIME_FORMAT
@@ -848,7 +839,6 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         self._line_pass = 0
         self._line_fail = 0
         self._lines_searched = 0
-        self.exprs = exprs
         self.days = days
         if days:
             self.hours = 0
@@ -862,40 +852,11 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
             # need this for e.g. gzipped files
             line = line.decode("utf-8", errors='backslashreplace')
 
-        if self.ts_matcher_cls:
-            timestamp = self.ts_matcher_cls(line)
-            if timestamp.matched:
-                return timestamp.strptime
+        timestamp = self.ts_matcher_cls(line)
+        if timestamp.matched:
+            return timestamp.strptime
 
-            return
-
-        # NOTE: the following code can be removed once we remove the deprecated
-        # exprs arg from this class.
-        log.debug("using patterns to identify timestamp is deprecated - "
-                  "use ts_matcher_cls instead")
-        for expr in self.exprs:
-            # log.debug("attempting to extract from line using expr '%s'",
-            #           expr)
-            ret = re.search(expr, line)
-            if ret:
-                # log.debug("expr '%s' successful", expr)
-                break
-
-        if not ret:
-            # log.info("all exprs unsuccessful: %s", self.exprs)
-            return
-
-        str_date = ""
-        for g in ret.groups():
-            str_date += "{} ".format(g)
-
-        str_date = str_date.strip()
-        try:
-            return datetime.strptime(str_date, self.date_format)
-        except ValueError:
-            # this can happen if the line is incomplete or does not contain a
-            # timestamp.
-            log.exception("")
+        return
 
     @property
     def _is_valid(self):

@@ -136,11 +136,9 @@ class TestSearchKitBase(utils.BaseTestCase):
         super().setUp()
         self.current_date = self.get_date("Thu Feb 10 16:19:17 UTC 2022")
         self.data_root = tempfile.mkdtemp()
-        self.constraints_cache_path = tempfile.mkdtemp()
 
     def tearDown(self):
         shutil.rmtree(self.data_root)
-        shutil.rmtree(self.constraints_cache_path)
         super().tearDown()
 
 
@@ -151,7 +149,6 @@ class TestSearchConstraints(TestSearchKitBase):
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'rb') as fd:
             self.assertEqual(c.apply_to_file(fd), 0)
@@ -165,7 +162,6 @@ class TestSearchConstraints(TestSearchKitBase):
         _file = os.path.join(self.data_root, 'f1')
 
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' + LOGS_W_TS)
@@ -181,7 +177,6 @@ class TestSearchConstraints(TestSearchKitBase):
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' * 499 + LOGS_W_TS)
@@ -198,7 +193,6 @@ class TestSearchConstraints(TestSearchKitBase):
         self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
         _file = os.path.join(self.data_root, 'f1')
         c = SearchConstraintSearchSince(current_date=self.current_date,
-                                        cache_path=self.constraints_cache_path,
                                         ts_matcher_cls=TimestampSimple, days=7)
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' * 501 + LOGS_W_TS)
@@ -275,7 +269,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
         self.mock_file.tell.side_effect = lambda: self.bio.tell()
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 04 14:40:01 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         self.mock_constraint = mock.MagicMock()
         self.mock_constraint.extracted_datetime.return_value = datetime(
@@ -603,7 +596,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_1(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:33 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
@@ -612,7 +604,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_2(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:34 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
@@ -621,7 +612,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_3(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:35 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
@@ -630,7 +620,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_4(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:35 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
@@ -639,7 +628,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_before(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:32 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         result = uut.run()
@@ -648,7 +636,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
     def test_run_no_such_date(self):
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:36 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         with self.assertRaises(NoValidLinesFoundInFile):
@@ -658,7 +645,6 @@ class TestLogFileDateSinceSeeker(TestSearchKitBase):
         self.bio = BytesIO(b"nodatewhatsoever")
         self.constraint = SearchConstraintSearchSince(
             current_date=self.get_date('Tue Apr 11 14:47:36 UTC 2019'),
-            cache_path=self.constraints_cache_path,
             ts_matcher_cls=TimestampSimple, days=7)
         uut = LogFileDateSinceSeeker(self.mock_file, self.constraint)
         with self.assertRaises(NoTimestampsFoundInFile):
