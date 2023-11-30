@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
+import hyperscan
 
 from functools import cached_property
 from collections import UserDict, UserList
@@ -113,6 +114,117 @@ class SearchDef(SearchDefBase):
                 break
 
         return ret
+
+
+class HyperscanSearchDef(SearchDefBase):
+
+    """
+        Simple search definition, backed by hyperscan re.
+
+        @param pattern: pattern or list of patterns to search for
+        @param tag: optional user-friendly identifier for this search term.
+                    This is useful for retrieving results.
+        @param store_result_contents: by default the content of a search result
+                                      is saved but if it is not needed this
+                                      can be set to False. This effectively
+                                      makes the result True/False.
+        @param field_info: optional ResultFieldInfo object
+    """
+
+    # This is defined as class level variable
+    # in order to be able to share hyperscan
+    # databases between processes without having
+    # to deal with `pickling`. Hyperscan instances
+    # are multithread/multiprocess safe by default.
+    hs_databases = {}
+
+    def _compile_hs_db(self, patterns, *args, **kwargs):
+        db = hyperscan.Database(*args, **kwargs)
+        expressions, ids, flags = [], [], []
+        group_names: dict[int, str] = {}
+        for i, (group_name, expr) in enumerate(patterns.items()):
+            ids.append(i)
+            expressions.append(expr.encode())
+            flags.append(0)
+            group_names[i] = group_name
+
+        db.compile(expressions=expressions, ids=ids, flags=flags)
+        log.debug(
+            "compiled hyperscan db for tag %s:"
+            "%s, size: %d byte(s)",
+            self.tag, db.info().decode(), db.size())
+        return db
+
+    def link_to_sequence(self, sequence_def, tag):
+        """
+        If this search definition is part of a sequence, the parent
+        SequenceSearchDef must link itself to this object.
+
+        @param sequence_def: SequenceSearchDef object
+        @param tag: SequenceSearchDef object tag for this section def
+        """
+        self.sequence_def = sequence_def
+        self.tag = tag
+
+    def __init__(self, pattern, tag=None, hint=None,
+                 store_result_contents=True, field_info=None,
+                 **kwargs) -> None:
+        self.tag = tag
+        self.hint = hint  # not used atm.
+        self.sequence_def = None
+        self.field_info = field_info
+        self.store_result_contents = store_result_contents
+
+        if isinstance(pattern, list):
+            self.patterns = dict(enumerate(pattern))
+        else:
+            self.patterns = {0: pattern}
+        if self.id not in HyperscanSearchDef.hs_databases:
+            dbs = {}
+            dbs['prefilter'] = self._compile_hs_db(
+                self.patterns, mode=hyperscan.HS_MODE_BLOCK)
+            dbs['group'] = self._compile_hs_db(
+                self.patterns, chimera=True, mode=hyperscan.CH_MODE_GROUPS)
+            HyperscanSearchDef.hs_databases[self.id] = dbs
+        # do this last
+        super().__init__(**kwargs)
+
+    def run(self, line):
+        match_result = None
+
+        class match_object:
+            """An object type that mimics the
+            re.match's return type.
+            """
+            def __init__(self, mg) -> None:
+                self._line = mg[0]
+                self._groups = {k: mg[k]
+                                for k in set(list(mg.keys())) - set([0])}
+
+            def groups(self):
+                return self._groups
+
+            def group(self, idx):
+                if idx == 0:
+                    return self._line
+                return self.groups()[idx]
+
+        def gm_on_match(_id, _start, _end, _flags, captured, _ctx):
+            nonlocal match_result
+            nonlocal line
+            match_result = dict()
+
+            for i, (_cap_flags, cap_from, cap_to) in enumerate(captured):
+                match_result[i] = line[cap_from:cap_to]
+
+        def on_match(_id, _start, _end, _flags, _ctx):
+            HyperscanSearchDef.hs_databases[self.id]['group'].scan(
+                line.encode(), gm_on_match)
+
+        HyperscanSearchDef.hs_databases[self.id]['prefilter'].scan(
+            line.encode(), on_match)
+
+        return match_object(match_result) if match_result else None
 
 
 class SequenceSearchDef(SearchDefBase):
@@ -1042,7 +1154,7 @@ class SearchTask(object):
                     fd.seek(0)
                     stats = self._run_search(fd)
                 except OSError:
-                    with open(path, 'rb') as fd:
+                    with open(path, 'rb', buffering=1024*1024*1024) as fd:
                         stats = self._run_search(fd)
         except UnicodeDecodeError:
             log.exception("caught UnicodeDecodeError while searching %s", path)
