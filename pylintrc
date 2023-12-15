@@ -1,5 +1,14 @@
-[MASTER]
+[MAIN]
 jobs=0
+ignore=.git
+
+# List of plugins (as comma separated values of python module names) to load,
+# usually to register additional checkers.
+load-plugins=pylint.extensions.no_self_use
+
+# When enabled, pylint would attempt to guess common misconfiguration and emit
+# user-friendly hints instead of false-positive error messages.
+suggestion-mode=yes
 
 [FORMAT]
 max-line-length=79
@@ -12,6 +21,7 @@ score=yes
 disable=
  fixme,
  invalid-name,
+ no-value-for-parameter,
  pointless-statement,
  missing-module-docstring,
  missing-class-docstring,
@@ -25,30 +35,22 @@ disable=
  too-many-lines,
  too-many-nested-blocks,
  too-many-statements,
- signature-differs,
  protected-access,
- redefined-argument-from-local,
  super-init-not-called,
- undefined-loop-variable,
- wrong-import-order,
- duplicate-code,
  useless-object-inheritance,
  unidiomatic-typecheck,
  unsubscriptable-object,
- consider-using-set-comprehension,
- use-a-generator,
- useless-super-delegation,
  inconsistent-return-statements,
- redefined-builtin,
  attribute-defined-outside-init,
  too-few-public-methods,
  abstract-method,
- no-else-return,
  no-self-use,
  broad-except,
- trailing-comma-tuple,
- redefined-outer-name,
- expression-not-assigned,
  unnecessary-lambda,
- pointless-string-statement,
  arguments-differ,
+ broad-exception-raised,
+ unspecified-encoding,
+ consider-using-f-string,
+ consider-using-with,
+ consider-using-dict-items,
+ unused-private-member,

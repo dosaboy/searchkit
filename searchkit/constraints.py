@@ -2,7 +2,6 @@ import abc
 import re
 import uuid
 import bisect
-
 from enum import Enum
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -122,7 +121,8 @@ class BinarySeekSearchBase(ConstraintBase):
         @return: datetime.datetime object or None
         """
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _since_date(self):
         """ A datetime.datetime object representing the "since" date/time """
 
@@ -173,8 +173,8 @@ class MaxSearchableLineLengthReached(Exception):
 
 
 class FindTokenStatus(Enum):
-    FOUND = 1,
-    REACHED_EOF = 2,
+    FOUND = 1
+    REACHED_EOF = 2
 
 
 class SearchState(object):

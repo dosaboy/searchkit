@@ -4,12 +4,9 @@ import re
 import tempfile
 import shutil
 import subprocess
-
 from collections import OrderedDict
-
 from unittest import mock
 
-from . import utils
 from searchkit import (
     FileSearcher,
     ResultFieldInfo,
@@ -28,6 +25,7 @@ from searchkit.constraints import (
     SearchConstraintSearchSince,
 )
 
+from . import utils
 
 SEQ_TEST_1 = """a start point
 leads to
@@ -493,8 +491,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test1')
         self.assertEqual(len(sections), 1)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "start")
                 elif r.tag == sd.end_tag:
@@ -519,8 +517,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test2')
         self.assertEqual(len(sections), 2)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
@@ -545,8 +543,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test3')
         self.assertEqual(len(sections), 2)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
@@ -566,8 +564,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test4')
         self.assertEqual(len(sections), 1)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.body_tag:
@@ -589,8 +587,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test5')
         self.assertEqual(len(sections), 2)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.body_tag:
@@ -617,8 +615,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test6')
         self.assertEqual(len(sections), 2)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     section = r.get(1)
                     self.assertTrue(r.get(1) in ["1", "2"])
@@ -647,8 +645,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test7')
         self.assertEqual(len(sections), 1)
-        for id in sections:
-            for r in sections[id]:
+        for section_id in sections:
+            for r in sections[section_id]:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "2")
                 elif r.tag == sd.body_tag:

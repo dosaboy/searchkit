@@ -11,7 +11,6 @@ import subprocess
 import threading
 import time
 import uuid
-
 from functools import cached_property
 from collections import UserDict, UserList
 
@@ -218,15 +217,15 @@ class SequenceSearchResults(UserDict):
         self.data = {}
 
     def add(self, result):
-        id = result.sequence_id
-        if id in self.data:
-            self.data[id].append(result)
+        sid = result.sequence_id
+        if sid in self.data:
+            self.data[sid].append(result)
         else:
-            self.data[id] = [result]
+            self.data[sid] = [result]
 
-    def remove(self, id):
-        if id in self.data:
-            del self.data[id]
+    def remove(self, sid):
+        if sid in self.data:
+            del self.data[sid]
 
 
 class ResultStoreBase(UserDict):
@@ -387,14 +386,14 @@ class SearchResultBase(UserList):
 
 class SearchResultMinimal(SearchResultBase):
 
-    def __init__(self, id, data, linenumber, source_id, tag,
+    def __init__(self, result_id, data, linenumber, source_id, tag,
                  sequence_id, sequence_section_id, field_info):
         """
         This is a minimised representation of a SearchResult object so as to
         reduce its size as much as possible before putting on the results
         queue.
         """
-        self.id = id
+        self.id = result_id
         self.data = data
         self.linenumber = linenumber
         self.source_id = source_id
@@ -550,8 +549,8 @@ class SearchResultsCollection(UserDict):
             paths = list(self._results_by_path.keys())
 
         results = []
-        for path in paths:
-            for result in self.find_by_path(path):
+        for _path in paths:
+            for result in self.find_by_path(_path):
                 if result.tag != tag:
                     continue
 
@@ -570,8 +569,8 @@ class SearchResultsCollection(UserDict):
             paths = list(self._results_by_path.keys())
 
         sequences = []
-        for path in paths:
-            for result in self.find_by_path(path):
+        for _path in paths:
+            for result in self.find_by_path(_path):
                 if result.sequence_id is None:
                     continue
 
@@ -640,8 +639,8 @@ class LogrotateLogSort(object):
         filters = [r"\S+\.log$",
                    r"\S+\.log\.(\d+)$",
                    r"\S+\.log\.(\d+)\.gz?$"]
-        for filter in filters:
-            ret = re.compile(filter).match(fname)
+        for f in filters:
+            ret = re.compile(f).match(fname)
             if ret:
                 break
 
@@ -699,12 +698,12 @@ class SearchCatalog(object):
                                        'path': path,
                                        'searches': [search]}
 
-    def resolve_from_id(self, id):
+    def resolve_from_id(self, search_id):
         """ Resolve search definition from unique id. """
-        if id in self._simple_searches:
-            return self._simple_searches[id]
+        if search_id in self._simple_searches:
+            return self._simple_searches[search_id]
 
-        return self._sequence_searches[id]
+        return self._sequence_searches[search_id]
 
     def resolve_from_tag(self, tag):
         """ Resolve search definition from tag.
@@ -712,8 +711,8 @@ class SearchCatalog(object):
         Returns a list of resolved searches.
         """
         searches = []
-        for id in self._search_tags[tag]:
-            searches.append(self.resolve_from_id(id))
+        for search_id in self._search_tags[tag]:
+            searches.append(self.resolve_from_id(search_id))
 
         return searches
 
@@ -753,7 +752,8 @@ class SearchCatalog(object):
     def _expand_path(self, path):
         if os.path.isfile(path):
             return [path]
-        elif os.path.isdir(path):
+
+        if os.path.isdir(path):
             return self._filtered_dir(os.listdir(path),
                                       self.max_logrotate_depth)
 
@@ -767,18 +767,18 @@ class SearchCatalog(object):
             log.error('\n'.join(list(self._source_ids.keys())))
 
     def _get_source_id(self, path):
-        for id, _path in self._source_ids.items():
+        for source_id, _path in self._source_ids.items():
             if _path == path:
-                return id
+                return source_id
 
-        s_id = str(uuid.uuid4())
-        while s_id in self._source_ids:
-            log.error("source id %s already exists - trying again", s_id)
-            s_id = str(uuid.uuid4())
+        source_id = str(uuid.uuid4())
+        while source_id in self._source_ids:
+            log.error("source id %s already exists - trying again", source_id)
+            source_id = str(uuid.uuid4())
 
-        log.debug("path=%s source_id=%s", path, s_id)
-        self._source_ids[s_id] = path
-        return s_id
+        log.debug("path=%s source_id=%s", path, source_id)
+        self._source_ids[source_id] = path
+        return source_id
 
     def __len__(self):
         return len(self._entries)
@@ -812,12 +812,12 @@ class SearchTask(object):
 
     @cached_property
     def search_defs(self):
-        all = {s_def: True for s_def in self.info['searches']}
-        for s_def in all:
+        alldefs = {s_def: True for s_def in self.info['searches']}
+        for s_def in alldefs:
             if s_def in self.search_defs_conditional:
-                all[s_def] = False
+                alldefs[s_def] = False
 
-        return all
+        return alldefs
 
     def put_result(self, result):
         self.stats['results'] += 1
@@ -975,7 +975,7 @@ class SearchTask(object):
         """
         self.stats.reset()
         sequence_results = SequenceSearchResults()
-        search_ids = set([s.id for s in self.search_defs])
+        search_ids = set([s.id for s in self.search_defs])  # noqa, pylint: disable=R1718
         offset = self.constraints_manager.apply_global(search_ids, fd)
         log.debug("starting search of %s (offset=%s, pos=%s)", fd.name, offset,
                   fd.tell())
@@ -1089,11 +1089,13 @@ class SearchTaskStats(UserDict):
 
 class SearcherBase(abc.ABC):
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def files(self):
         """ Returns a list of files we will be searching. """
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def num_parallel_tasks(self):
         """
         Returns an integer representing the maximum number of tasks we can
@@ -1225,20 +1227,20 @@ class FileSearcher(SearcherBase):
         """
         return self._stats
 
-    def _get_results(self, results, queue, event, stats):
+    def _get_results(self, results, results_queue, event, stats):
         """
         Collect results from all search task processes.
 
         @param results: SearchResultsCollection object.
-        @param queue: results queue used for this search session.
+        @param results_queue: results queue used for this search session.
         @param event: event object used to notify this thread to stop.
         @param stats: SearchTaskStats object
         """
         log.debug("fetching results from worker queues")
 
         while True:
-            if not queue.empty():
-                results.add(queue.get())
+            if not results_queue.empty():
+                results.add(results_queue.get())
             elif event.is_set():
                 log.debug("exiting results thread")
                 break
@@ -1251,12 +1253,12 @@ class FileSearcher(SearcherBase):
 
         log.debug("stopped fetching results (total received=%s)", len(results))
 
-    def _purge_results(self, results, queue, expected):
+    def _purge_results(self, results, results_queue, expected):
         """
         Purge results from all search task processes.
 
         @param results: SearchResultsCollection object.
-        @param queue: results queue used for this search session.
+        @param results_queue: results queue used for this search session.
         @param expected: number of results we expect to receive. this is used
                          to do a final sweep once all search tasks are complete
                          to ensure all results have been collected.
@@ -1264,11 +1266,11 @@ class FileSearcher(SearcherBase):
         log.debug("purging results (expected=%s)", expected)
 
         while True:
-            if not queue.empty():
-                results.add(queue.get())
+            if not results_queue.empty():
+                results.add(results_queue.get())
             elif expected > len(results):
                 try:
-                    r = queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
+                    r = results_queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
                     results.add(r)
                 except queue.Empty:
                     log.info("timeout waiting > %s secs to receive results - "
@@ -1280,12 +1282,12 @@ class FileSearcher(SearcherBase):
         log.debug("stopped purging results (total received=%s)",
                   len(results))
 
-    def _create_results_thread(self, results, queue, stats):
+    def _create_results_thread(self, results, results_queue, stats):
         log.debug("creating results queue consumer thread")
         event = threading.Event()
         event.clear()
         t = threading.Thread(target=self._get_results,
-                             args=[results, queue, event, stats])
+                             args=[results, results_queue, event, stats])
         return t, event
 
     def _stop_results_thread(self, thread, event):
@@ -1330,18 +1332,18 @@ class FileSearcher(SearcherBase):
 
         @param results: SearchResultsCollection object
         """
-        queue = multiprocessing.Queue()
+        results_queue = multiprocessing.Queue()
         for info in self.catalog:
             task = SearchTask(info,
                               constraints_manager=self.constraints_manager,
-                              results_queue=queue,
+                              results_queue=results_queue,
                               results_store=results_store,
                               decode_errors=self.decode_errors)
             self.stats.update(task.execute())
 
         self.stats['jobs_completed'] = 1
         self.stats['total_jobs'] = 1
-        self._purge_results(results, queue, self.stats['results'])
+        self._purge_results(results, results_queue, self.stats['results'])
 
     def _run_mp(self, mgr, results, results_store):
         """ Run searches in parallel.
@@ -1349,8 +1351,9 @@ class FileSearcher(SearcherBase):
         @param mgr: multiprocessing.Manager object
         @param results: SearchResultsCollection object
         """
-        queue = mgr.Queue()
-        results_thread, event = self._create_results_thread(results, queue,
+        results_queue = mgr.Queue()
+        results_thread, event = self._create_results_thread(results,
+                                                            results_queue,
                                                             self.stats)
         results_thread_started = False
         try:
@@ -1362,7 +1365,7 @@ class FileSearcher(SearcherBase):
                     c_mgr = self.constraints_manager
                     task = SearchTask(info,
                                       constraints_manager=c_mgr,
-                                      results_queue=queue,
+                                      results_queue=results_queue,
                                       results_store=results_store,
                                       decode_errors=self.decode_errors)
                     job = executor.submit(task.execute)
@@ -1395,7 +1398,8 @@ class FileSearcher(SearcherBase):
                 log.debug("purging remaining results (expected=%s, "
                           "remaining=%s)", self.stats['results'],
                           self.stats['results'] - len(results))
-                self._purge_results(results, queue, self.stats['results'])
+                self._purge_results(results, results_queue,
+                                    self.stats['results'])
 
                 self._ensure_worker_processes_killed()
                 log.debug("terminating pool")
@@ -1414,7 +1418,7 @@ class FileSearcher(SearcherBase):
             log.debug("catalog is empty - nothing to run")
             return SearchResultsCollection(self.catalog, ResultStoreSimple())
 
-        self.stats['searches'] = sum([len(p['searches'])
+        self.stats['searches'] = sum([len(p['searches'])  # noqa, pylint: disable=R1728
                                       for p in self.catalog])
         self.stats['searches_by_job'] = [len(p['searches'])
                                          for p in self.catalog]

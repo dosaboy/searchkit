@@ -1,13 +1,12 @@
 import abc
 import dbm
-import fasteners
 import os
 import shelve
 import time
-
 from contextlib import ContextDecorator
 from functools import cached_property
 
+import fasteners
 from searchkit.log import log
 
 
