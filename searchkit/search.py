@@ -12,9 +12,10 @@ import threading
 import time
 import uuid
 from functools import cached_property
-from collections import UserDict, UserList
+from collections import namedtuple, UserDict, UserList
 
 from searchkit.log import log
+from searchkit.constraints import CouldNotApplyConstraint
 
 RESULTS_QUEUE_TIMEOUT = 60
 MAX_QUEUE_RETRIES = 10
@@ -993,11 +994,12 @@ class SearchTask(object):
 
             for s_def in self.search_defs:
                 if not runnable[s_def.id]:
-                    if not self.constraints_manager.apply_single(s_def, line):
+                    ret = self.constraints_manager.apply_single(s_def, line)
+                    if not ret.line_is_valid:
                         continue
 
-                    # enable from here on in
-                    runnable[s_def.id] = True
+                    # enable from here on in if *all* constraints passed
+                    runnable[s_def.id] = ret.all_constraints_passed
 
                 if type(s_def) == SequenceSearchDef:
                     self._sequence_search(s_def, line, ln, sequence_results)
@@ -1146,19 +1148,33 @@ class SearchConstraintsManager(object):
         return offset
 
     def apply_single(self, searchdef, line):
-        """
-        Apply any constraints for this searchdef to the give line.
-        """
-        if not searchdef.constraints:
-            return True
+        """ Apply any constraints for this searchdef to the give line.
 
+        @param searchdef: SearchDef object
+        @param line: string line we want to validate
+        @return: tuple of showing if line passes and if so, did all
+                 constraints applied pass.
+        """
+        Result = namedtuple('result',
+                            ('line_is_valid', 'all_constraints_passed'))
+
+        if not searchdef.constraints:
+            return Result(True, True)
+
+        any_passed = False
+        all_passed = True
         for c in searchdef.constraints.values():
-            if c.apply_to_line(line):
+            try:
+                if c.apply_to_line(line):
+                    any_passed = True
+                    continue
+            except CouldNotApplyConstraint:
+                all_passed = False
                 continue
 
-            return False
+            return Result(False, False)
 
-        return True
+        return Result(any_passed, all_passed)
 
 
 class FileSearcher(SearcherBase):

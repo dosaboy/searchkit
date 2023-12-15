@@ -29,7 +29,8 @@ class TimestampMatcherBase(object):
                 self.result = ret
                 break
         else:
-            log.debug("failed to identify constraint datetime")
+            log.debug("unable to identify constraint datetime on line "
+                      "starting '%s...'", line[:5])
 
     @property
     @abc.abstractmethod
@@ -148,6 +149,10 @@ class BinarySeekSearchBase(ConstraintBase):
         #           line[-3:].strip())
 
         return True
+
+
+class CouldNotApplyConstraint(Exception):
+    """ Unable to apply a constraint for any reason. """
 
 
 class NoValidLinesFoundInFile(Exception):
@@ -875,22 +880,26 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
 
     def apply_to_line(self, line):
         if not self._is_valid:
-            log.warning("c:%s unable to apply constraint to line", self.id)
-            self._line_pass += 1
-            return True
+            # The caller is expected to catch this and handle it appropriately,
+            # perhaps deciding to continue.
+            raise CouldNotApplyConstraint("c:{} unable to apply constraint to "
+                                          "line as since_date not valid".
+                                          format(self.id))
 
         extracted_datetime = self.extracted_datetime(line)
         if not extracted_datetime:
+            raise CouldNotApplyConstraint("c:{} unable to apply constraint to "
+                                          "line since unable to extract "
+                                          "a datetime from the start of the "
+                                          "line to compare against".
+                                          format(self.id))
+
+        if self._line_date_is_valid(extracted_datetime):
             self._line_pass += 1
             return True
 
-        ret = self._line_date_is_valid(extracted_datetime)
-        if ret:
-            self._line_pass += 1
-        else:
-            self._line_fail += 1
-
-        return ret
+        self._line_fail += 1
+        return False
 
     def apply_to_file(self, fd, destructive=True):
         if not self._is_valid:
