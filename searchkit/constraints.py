@@ -853,7 +853,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         self._results = {}
 
     def extracted_datetime(self, line):
-        if type(line) == bytes:
+        if isinstance(line, bytes):
             # need this for e.g. gzipped files
             line = line.decode("utf-8", errors='backslashreplace')
 

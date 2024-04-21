@@ -69,7 +69,7 @@ class SearchDef(SearchDefBase):
                                       makes the result True/False.
         @param field_info: optional ResultFieldInfo object
         """
-        if type(pattern) != list:
+        if not isinstance(pattern, list):
             self.patterns = [re.compile(pattern)]
         else:
             self.patterns = []
@@ -354,7 +354,7 @@ class SearchResultBase(UserList):
         """
         for part in self.data:
             store_id = None
-            if type(field) == str:
+            if isinstance(field, str):
                 if part['name'] == field:
                     store_id = part['store_id']
             elif part['idx'] == field:
@@ -925,7 +925,7 @@ class SearchTask(object):
         # and complete the section.
         filter_section_id = {}
         for s_def in self.search_defs:
-            if type(s_def) != SequenceSearchDef:
+            if not isinstance(s_def, SequenceSearchDef):
                 continue
 
             seq_def = s_def
@@ -1001,7 +1001,7 @@ class SearchTask(object):
                     # enable from here on in if *all* constraints passed
                     runnable[s_def.id] = ret.all_constraints_passed
 
-                if type(s_def) == SequenceSearchDef:
+                if isinstance(s_def, SequenceSearchDef):
                     self._sequence_search(s_def, line, ln, sequence_results)
                 else:
                     self._simple_search(s_def, line, ln)
@@ -1078,7 +1078,7 @@ class SearchTaskStats(UserDict):
                      'results': 0,
                      'num_deduped': 0}
 
-    def update(self, stats):
+    def update(self, stats):  # pylint: disable=W0221
         if not stats:
             return
 
@@ -1210,7 +1210,7 @@ class FileSearcher(SearcherBase):
     def resolve_source_id(self, source_id):
         return self.catalog.source_id_to_path(source_id)
 
-    def add(self, searchdef, path, allow_global_constraints=True):
+    def add(self, searchdef, path, allow_global_constraints=True):  # noqa, pylint: disable=W0221
         """
         Add a search definition.
 
@@ -1322,7 +1322,7 @@ class FileSearcher(SearcherBase):
         log.debug("ensuring all pool workers killed")
         worker_pids = []
         for child in multiprocessing.active_children():
-            if type(child) == multiprocessing.context.ForkProcess:
+            if isinstance(child, multiprocessing.context.ForkProcess):
                 if 'ForkProcess' in child.name:
                     worker_pids.append(child.pid)
 

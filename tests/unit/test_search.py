@@ -198,7 +198,7 @@ class TestSearchKit(TestSearchKitBase):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
             for i in range(30):
-                open(os.path.join(dtmp, str(i)), 'w').close()
+                open(os.path.join(dtmp, str(i)), 'w').close()  # noqa, pylint: disable=R1732
 
             f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
             results = f.run()
@@ -210,7 +210,7 @@ class TestSearchKit(TestSearchKitBase):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
             for i in range(30):
-                open(os.path.join(dtmp, str(i)), 'w').close()
+                open(os.path.join(dtmp, str(i)), 'w').close()  # noqa, pylint: disable=R1732
 
             for i in range(30, 60):
                 with open(os.path.join(dtmp, str(i)), 'w') as fd:
@@ -491,8 +491,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test1')
         self.assertEqual(len(sections), 1)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "start")
                 elif r.tag == sd.end_tag:
@@ -517,8 +517,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test2')
         self.assertEqual(len(sections), 2)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
@@ -543,8 +543,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test3')
         self.assertEqual(len(sections), 2)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.end_tag:
@@ -564,8 +564,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test4')
         self.assertEqual(len(sections), 1)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.body_tag:
@@ -587,8 +587,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test5')
         self.assertEqual(len(sections), 2)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "another")
                 elif r.tag == sd.body_tag:
@@ -615,8 +615,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test6')
         self.assertEqual(len(sections), 2)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     section = r.get(1)
                     self.assertTrue(r.get(1) in ["1", "2"])
@@ -645,8 +645,8 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         sections = results.find_sequence_by_tag('seq-search-test7')
         self.assertEqual(len(sections), 1)
-        for section_id in sections:
-            for r in sections[section_id]:
+        for section_info in sections.values():
+            for r in section_info:
                 if r.tag == sd.start_tag:
                     self.assertEqual(r.get(1), "2")
                 elif r.tag == sd.body_tag:
