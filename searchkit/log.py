@@ -2,7 +2,7 @@
 import logging
 
 log = logging.getLogger('searchkit')
-logformat = ("%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] "
+logformat = ("%(asctime)s %(process)d %(levelname)s %(name)s [-] "
              "%(message)s")
 
 
