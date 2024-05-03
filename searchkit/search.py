@@ -602,8 +602,7 @@ class SearchResultsCollection(UserDict):
     @property
     def all(self):
         for results in self._results_by_path.values():
-            for r in results:
-                yield r
+            yield from results
 
     def reset(self):
         self._results_by_path = {}
@@ -872,8 +871,7 @@ class SearchCatalog(object):
         return len(self._entries)
 
     def __iter__(self):
-        for entry in self._entries.values():
-            yield entry
+        yield from self._entries.values()
 
     def __repr__(self):
         info = ""
