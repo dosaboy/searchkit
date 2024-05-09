@@ -12,6 +12,8 @@ import subprocess
 import threading
 import time
 import uuid
+import json
+from pathlib import Path
 from functools import cached_property
 from collections import namedtuple, UserDict, UserList
 
@@ -1112,16 +1114,26 @@ class SearchTask(object):
         sequence_results = SequenceSearchResults()
         search_ids = set([s.id for s in self.search_defs])  # noqa, pylint: disable=R1718
         offset = self.constraints_manager.apply_global(search_ids, fd)
-        log.debug("starting search of %s (offset=%s, pos=%s)", fd.name, offset,
-                  fd.tell())
+        log.debug("starting search of %s (offset=%s, pos=%s) for tags [%s]",
+                  fd.name, offset, fd.tell(),
+                  json.dumps([s.tag for s in self.search_defs], indent=2))
+
+        # Get the total file size (needed for calculating the search progress)
+        before_pos = fd.tell()
+        fd.seek(0, 2)
+        eof_offset = fd.tell()
+        fd.seek(before_pos)
+
         runnable = {s.id: _runnable
                     for s, _runnable in self.search_defs.items()}
         ln = 0
+        filename_short = Path(*Path(fd.name).parts[-2:])
         # NOTE: line numbers start at 1 hence offset + 1
         for ln, line in enumerate(fd, start=offset + 1):
             # This could be helpful to show progress for large files
             if ln % 100000 == 0:
-                log.debug("%s lines searched in %s", ln, fd.name)
+                log.debug("%s lines searched in %s (%.3f%%)",
+                          ln, filename_short, (fd.tell() / eof_offset) * 100.0)
 
             self.stats['lines_searched'] += 1
             line = line.decode("utf-8", **self.decode_kwargs)
