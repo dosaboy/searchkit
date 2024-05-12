@@ -228,6 +228,8 @@ class TestSearchKit(TestSearchKitBase):
             for i in range(1000):
                 with open(os.path.join(dtmp, str(i)), 'w') as fd:
                     fd.write("a key: foo bar\n")
+                    for i in range(1000):
+                        fd.write("some extra text\n")
                     fd.write("a key: bar foo\n")
 
             f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
@@ -339,7 +341,8 @@ class TestSearchKit(TestSearchKitBase):
             finally:
                 shutil.rmtree(dtmp)
 
-            self.assertEqual(f.stats['num_deduped'], 40037)
+            self.assertEqual(f.stats['parts_deduped'], 40037)
+            self.assertEqual(f.stats['parts_non_deduped'], 3)
 
         self.assertEqual(len(results), 40040)
         self.assertEqual(len(results.find_by_tag('simple')), 20000)
@@ -907,14 +910,17 @@ class TestSearchKit(TestSearchKitBase):
     def test_search_result_index(self):
         sri = ResultStoreSimple()
         for val in ['foo', 'bar', 'foo']:
-            sri.add(val)
+            sri.add('atag', None, val)
 
-        self.assertEqual(sri, {0: 'foo', 1: 'bar'})
-        self.assertEqual(sri.meta, {0: 2, 1: 1})
+        self.assertEqual(sri, ['foo', 'bar'])
+        self.assertEqual(sri.counters, {0: 2, 1: 1})
+        self.assertEqual(sri.tag_store, ['atag'])
         self.assertEqual(sri[0], 'foo')
-        self.assertEqual(sri.get(1), 'bar')
-        self.assertEqual(sri.get(2), None)
-        self.assertEqual(sri.num_deduped, 1)
+
+        self.assertEqual(sri[1], 'bar')
+        self.assertEqual(sri[2], None)
+        self.assertEqual(sri.parts_deduped, 1)
+        self.assertEqual(sri.parts_non_deduped, 2)
 
     def test_search_unicode_decode_w_error(self):
         f = FileSearcher()
