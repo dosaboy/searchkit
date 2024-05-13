@@ -261,14 +261,16 @@ class ResultStoreBase(UserList):
     def parts_non_deduped(self):
         return len(self.value_store)
 
-    def _get_value_index(self, value, store):
+    def _get_store_index(self, value, store):
         """
-        If the value is not None and not already saved, save it.
+        Add value to the provided store and return its position. If the value
+        is None do not save in the store and return None.
 
-        Returns the position of the value in the store or -1 if it is None.
+        @param value: arbitrary value to store
+        @param store: implementation of ResultStoreBase
         """
         if value is None:
-            return -1
+            return None
 
         if value in store:
             return store.index(value)
@@ -282,23 +284,23 @@ class ResultStoreBase(UserList):
         position.
 
         Returns a tuple of references to the position in the store of each
-        value. A ref value of -1 indicates that the value does not exist and is
-        not stored.
+        value. A ref value of None indicates that the value does not exist and
+        is not stored.
 
         @param tag: optional search tag
         @param sequence_id: optional sequence search id
         @param value: search result value
         """
-        value_idx = self._get_value_index(value, self.value_store)
-        if value_idx >= 0:
+        value_idx = self._get_store_index(value, self.value_store)
+        if value_idx is not None:
             # increment global counter
             if value_idx not in self.counters:
                 self.counters[value_idx] = 1
             else:
                 self.counters[value_idx] += 1
 
-        tag_idx = self._get_value_index(tag, self.tag_store)
-        sequence_id_idx = self._get_value_index(sequence_id,
+        tag_idx = self._get_store_index(tag, self.tag_store)
+        sequence_id_idx = self._get_store_index(sequence_id,
                                                 self.sequence_id_store)
         return tag_idx, sequence_id_idx, value_idx
 
@@ -396,9 +398,12 @@ class SearchResultBase(UserList):
         self.section_id = None
 
     def _get_store_id(self, field):
+        """
+        Get the position in the results store of the value corresponding to
+        field. A return value of None indicates that the value does not exist
+        in the store.
+        """
         for part in self.data:
-            store_id = None
-            # Entry has format: (<idx>, <tag_id>, <store id>, <field name>)
             if len(part) > self.PART_OFFSET_FIELD and isinstance(field, str):
                 if part[self.PART_OFFSET_FIELD] != field:
                     continue
@@ -471,7 +476,7 @@ class SearchResultMinimal(SearchResultBase):
     @property
     def tag(self):
         idx = self.metadata[self.META_OFFSET_TAG]
-        if idx < 0:
+        if idx is None:
             return
 
         return self.results_store.tag_store[idx]
@@ -479,7 +484,7 @@ class SearchResultMinimal(SearchResultBase):
     @property
     def sequence_id(self):
         idx = self.metadata[self.META_OFFSET_SEQ_ID]
-        if idx < 0:
+        if idx is None:
             return
 
         return self.results_store.sequence_id_store[idx]
@@ -559,6 +564,11 @@ class SearchResult(SearchResultBase):
 
         _, _, store_id = self.results_store.add(self.tag, self.sequence_id,
                                                 value)
+
+        # REMEMBER:
+        #   PART_OFFSET_IDX = 0
+        #   PART_OFFSET_VALUE = 1
+        #   PART_OFFSET_FIELD = 2
         if name is None:
             entry = (part_index, store_id)
         else:
