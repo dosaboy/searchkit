@@ -1179,14 +1179,14 @@ class SearchTask(object):
             with gzip.open(path, 'rb') as fd:
                 try:
                     # test if file is gzip
-                    fd.read(1)
-                    fd.seek(0)
-                    stats = self._run_search(fd)
-                    self._flush_results_buffer()
+                    fd.peek(1)
                 except OSError:
                     with open(path, 'rb') as fd:
                         stats = self._run_search(fd)
-                        self._flush_results_buffer()
+                else:
+                    stats = self._run_search(fd)
+                finally:
+                    self._flush_results_buffer()
         except UnicodeDecodeError:
             log.exception("caught UnicodeDecodeError while searching %s", path)
             raise
