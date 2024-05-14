@@ -43,3 +43,10 @@ class BaseTestCase(unittest.TestCase):
             set_log_level(logging.DEBUG)
         else:
             set_log_level(logging.INFO)
+
+    def _addDuration(self, *args, **kwargs):  # For Python >= 3.12
+        """ Python 3.12 needs subclasses of unittest.TestCase to implement
+        this in order to record times and execute any cleanup actions once
+        a test completes regardless of success. Otherwise it emits a warning.
+        This generic implementation helps suppress it and possibly others in
+        the future. """
