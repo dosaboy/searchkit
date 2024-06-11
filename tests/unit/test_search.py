@@ -925,13 +925,17 @@ class TestSearchKit(TestSearchKitBase):
     def test_search_unicode_decode_w_error(self):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
-            fpath = os.path.join(dtmp, 'f1')
-            with open(fpath, 'wb') as fd:
-                fd.write(b'\xe2')
+            with self.assertLogs(logger="searchkit", level="ERROR") as log:
+                fpath = os.path.join(dtmp, 'f1')
+                with open(fpath, 'wb') as fd:
+                    fd.write(b'\xe2')
 
-            f.add(SearchDef(r'(.+)', tag='simple'), fpath)
-            with self.assertRaises(UnicodeDecodeError):
-                f.run()
+                f.add(SearchDef(r'(.+)', tag='simple'), fpath)
+                with self.assertRaises(UnicodeDecodeError):
+                    f.run()
+                self.assertEqual(len(log.output), 1)
+                self.assertIn("UnicodeDecodeError: 'utf-8' codec can't decode "
+                              "byte 0xe2 in position", log.output[0])
 
     def test_search_unicode_decode_no_error(self):
         f = FileSearcher(decode_errors='backslashreplace')
