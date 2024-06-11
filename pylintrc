@@ -45,3 +45,11 @@ disable=
  broad-exception-raised,
  unspecified-encoding,
  consider-using-f-string,
+
+[TYPECHECK]
+# List of module names for which member attributes should not be checked
+#
+# hyperscan is on ignore list because pylint is having trouble locating module
+# members for hyperscan and raising invalid "no-member" errors, e.g.;
+# Module 'hyperscan' has no 'Database' member (no-member)
+ignored-modules=hyperscan

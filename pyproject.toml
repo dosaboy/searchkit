@@ -23,4 +23,5 @@ dynamic = ["version"]
 dependencies = [
     'importlib-metadata; python_version >= "3.8"',
     'fasteners',
+    'hyperscan >= 0.7.0'
 ]
