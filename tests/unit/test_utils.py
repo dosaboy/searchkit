@@ -7,7 +7,7 @@ from . import utils
 
 
 class TestUtils(utils.BaseTestCase):
-
+    """ Unit tests for unit test utils. """
     def test_mpcache_simple(self):
         with tempfile.TemporaryDirectory() as dtmp:
             cache = MPCache('testtype', 'testcache', dtmp)

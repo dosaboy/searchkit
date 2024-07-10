@@ -9,7 +9,7 @@ from functools import cached_property
 from searchkit.log import log
 
 
-class TimestampMatcherBase(object):
+class TimestampMatcherBase():
     """
     Match start of line timestamps in a standard way.
 
@@ -74,6 +74,7 @@ class TimestampMatcherBase(object):
 
 
 class ConstraintBase(abc.ABC):
+    """ Base class for all constraints. """
 
     @cached_property
     def id(self):
@@ -124,7 +125,7 @@ class BinarySeekSearchBase(ConstraintBase):
 
     @property
     @abc.abstractmethod
-    def _since_date(self):
+    def since_date(self):
         """ A datetime.datetime object representing the "since" date/time """
 
     def _line_date_is_valid(self, extracted_datetime):
@@ -140,12 +141,12 @@ class BinarySeekSearchBase(ConstraintBase):
             #          unique_search_id, ', '.join(self.exprs))
             return False
 
-        if ts < self._since_date:
-            # log.debug("%s < %s at (%s) i.e. False", ts, self._since_date,
+        if ts < self.since_date:
+            # log.debug("%s < %s at (%s) i.e. False", ts, self.since_date,
             #           line[-3:].strip())
             return False
 
-        # log.debug("%s >= %s at (%s) i.e. True", ts, self._since_date,
+        # log.debug("%s >= %s at (%s) i.e. True", ts, self.since_date,
         #           line[-3:].strip())
 
         return True
@@ -178,16 +179,16 @@ class MaxSearchableLineLengthReached(Exception):
 
 
 class FindTokenStatus(Enum):
+    """ Token search status representation. """
     FOUND = 1
     REACHED_EOF = 2
 
 
-class SearchState(object):
-    def __init__(self, status: FindTokenStatus, offset=0):
+class SearchState():
+    """ Binary search state representation. """
+    def __init__(self, status: FindTokenStatus, offset: int = 0):
         """
-        Representation of binary search state.
-
-        @param status: current status of search
+        @param status: current status of search.
         @param offset: current position in file from which next search will be
                        started.
         """
@@ -203,7 +204,7 @@ class SearchState(object):
         return self._offset
 
 
-class SavedFilePosition(object):
+class SavedFilePosition():
     """
     Context manager class that saves current position at start and restores
     once finished.
@@ -219,7 +220,7 @@ class SavedFilePosition(object):
         self.file.seek(self.original_position)
 
 
-class LogLine(object):
+class LogLine():
     """
     Class representing a line extracted from a log file.
 
@@ -316,7 +317,7 @@ class LogLine(object):
             return line_text
 
 
-class LogFileDateSinceSeeker(object):
+class LogFileDateSinceSeeker():
     """
     Performs "since" date lookups with file offsets. This is
     useful for performing line-based binary date searches on a log file.
@@ -425,9 +426,9 @@ class LogFileDateSinceSeeker(object):
                 return SearchState(status=FindTokenStatus.REACHED_EOF,
                                    offset=0)
 
-        msg = ("reached max line length ({}) search without finding a line "
-               "feed (epicenter={})".format(self.MAX_SEARCHABLE_LINE_LENGTH,
-                                            start_offset_saved))
+        msg = (f"reached max line length ({self.MAX_SEARCHABLE_LINE_LENGTH}) "
+               "search without finding a line "
+               f"feed (epicenter={start_offset_saved})")
         raise MaxSearchableLineLengthReached(msg)
 
     def find_token(self, start_offset):
@@ -469,9 +470,9 @@ class LogFileDateSinceSeeker(object):
             # chunk's length.
             current_offset = current_offset + len(chunk)
 
-        msg = ("reached max line length ({}) search without finding a line "
-               "feed (epicenter={})".format(self.MAX_SEARCHABLE_LINE_LENGTH,
-                                            start_offset_saved))
+        msg = (f"reached max line length ({self.MAX_SEARCHABLE_LINE_LENGTH}) "
+               "search without finding a line feed "
+               f"(epicenter={start_offset_saved})")
         raise MaxSearchableLineLengthReached(msg)
 
     def try_find_line(self, epicenter, slf_off=None, elf_off=None):
@@ -746,16 +747,16 @@ class LogFileDateSinceSeeker(object):
         # to indicate that.
 
         self.found_any_date = True
-        if result.date >= self.constraint._since_date:
+        if result.date >= self.constraint.since_date:
             # Keep the matching line so we can access it
             # after the bisect without having to perform another
             # lookup.
             self.line_info = result
 
-        constraint_met = ((result.date >= self.constraint._since_date)
+        constraint_met = ((result.date >= self.constraint.since_date)
                           if result.date else False)
         log.debug("extracted_date='%s' >= since_date='%s' == %s", result.date,
-                  self.constraint._since_date, constraint_met)
+                  self.constraint.since_date, constraint_met)
         return result.date
 
     def run(self):
@@ -788,14 +789,14 @@ class LogFileDateSinceSeeker(object):
                              SearchState(FindTokenStatus.FOUND, -1),
                              SearchState(FindTokenStatus.FOUND, 100))
             if result.date is not None:
-                if result.date >= self.constraint._since_date:
+                if result.date >= self.constraint.since_date:
                     log.debug("first line has date that is valid so assuming "
                               "rest of file is valid")
                     return current
 
         log.debug("starting full binary search")
         try:
-            bisect.bisect_left(self, self.constraint._since_date)
+            bisect.bisect_left(self, self.constraint.since_date)
         except TooManyLinesWithoutDate as exc:
             if not self.found_any_date:
                 raise NoTimestampsFoundInFile from exc
@@ -813,8 +814,12 @@ class LogFileDateSinceSeeker(object):
         return self.line_info.start_offset
 
 
-class SearchConstraintSearchSince(BinarySeekSearchBase):
-
+class SearchConstraintSearchSince(BinarySeekSearchBase):  # noqa, pylint: disable=too-many-instance-attributes
+    """
+    Search constraints implementation to filter lines that are after a given
+    date/time. The constraint can be applied to a line or an entire file and
+    for the latter a binary search is performed.
+    """
     def __init__(self, current_date, ts_matcher_cls, days=0, hours=24,
                  **kwargs):
         """
@@ -833,13 +838,6 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         """
         super().__init__(**kwargs)
         self.ts_matcher_cls = ts_matcher_cls
-        if ts_matcher_cls:
-            self.date_format = ts_matcher_cls.DEFAULT_DATETIME_FORMAT
-        else:
-            log.warning("using patterns to identify timestamp is deprecated - "
-                        "use ts_matcher_cls instead")
-            self.date_format = TimestampMatcherBase.DEFAULT_DATETIME_FORMAT
-
         self.current_date = datetime.strptime(current_date, self.date_format)
         self._line_pass = 0
         self._line_fail = 0
@@ -852,6 +850,15 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
 
         self._results = {}
 
+    @property
+    def date_format(self):
+        if self.ts_matcher_cls:
+            return self.ts_matcher_cls.DEFAULT_DATETIME_FORMAT
+
+        log.warning("using patterns to identify timestamp is deprecated - "
+                    "use ts_matcher_cls instead")
+        return TimestampMatcherBase.DEFAULT_DATETIME_FORMAT
+
     def extracted_datetime(self, line):
         if isinstance(line, bytes):
             # need this for e.g. gzipped files
@@ -861,19 +868,19 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         if timestamp.matched:
             return timestamp.strptime
 
-        return
+        return None
 
     @property
     def _is_valid(self):
-        return self._since_date is not None
+        return self.since_date is not None
 
     @cached_property
-    def _since_date(self):  # pylint: disable=W0236
+    def since_date(self):
         """
         Reflects the date from which we will start to apply searches.
         """
         if not self.current_date:
-            return
+            return None
 
         return self.current_date - timedelta(days=self.days,
                                              hours=self.hours or 0)
@@ -882,17 +889,16 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         if not self._is_valid:
             # The caller is expected to catch this and handle it appropriately,
             # perhaps deciding to continue.
-            raise CouldNotApplyConstraint("c:{} unable to apply constraint to "
-                                          "line as since_date not valid".
-                                          format(self.id))
+            raise CouldNotApplyConstraint(f"c:{self.id} unable to apply "
+                                          "constraint to line as since_date "
+                                          "not valid")
 
         extracted_datetime = self.extracted_datetime(line)
         if not extracted_datetime:
-            raise CouldNotApplyConstraint("c:{} unable to apply constraint to "
-                                          "line since unable to extract "
-                                          "a datetime from the start of the "
-                                          "line to compare against".
-                                          format(self.id))
+            raise CouldNotApplyConstraint(f"c:{self.id} unable to apply "
+                                          "constraint to line since unable to "
+                                          "extract a datetime from the start "
+                                          "of the line to compare against")
 
         if self._line_date_is_valid(extracted_datetime):
             self._line_pass += 1
@@ -905,14 +911,14 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         if not self._is_valid:
             log.warning("c:%s unable to apply constraint to %s", self.id,
                         fd.name)
-            return
+            return None
 
         if fd.name in self._results:
             log.debug("using cached offset")
             return self._results[fd.name]
 
         log.debug("c:%s: starting binary seek search to %s in file %s "
-                  "(destructive=True)", self.id, self._since_date, fd.name)
+                  "(destructive=True)", self.id, self.since_date, fd.name)
         try:
             orig_offset = fd.tell()
             seeker = LogFileDateSinceSeeker(fd, self)
@@ -933,7 +939,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
             return fd.tell()
         except NoValidLinesFoundInFile:
             log.debug("c:%s no date after %s found in file - seeking to end",
-                      self._since_date, self.id)
+                      self.since_date, self.id)
             fd.seek(0, 2)
             return fd.tell()
         except TooManyLinesWithoutDate as exc:
@@ -957,4 +963,4 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):
         return _stats
 
     def __repr__(self):
-        return "id={}, since={}".format(self.id, self._since_date)
+        return f"id={self.id}, since={self.since_date}"

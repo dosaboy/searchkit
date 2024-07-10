@@ -24,7 +24,7 @@ def create_files(files_to_create):
                     os.makedirs(os.path.dirname(path))
 
                 log.debug("creating test file %s", path)
-                with open(path, 'w') as fd:
+                with open(path, 'w', encoding='utf-8') as fd:
                     fd.write(content)
 
             ret = f(self, *args, **kwargs)
@@ -36,15 +36,16 @@ def create_files(files_to_create):
 
 
 class BaseTestCase(unittest.TestCase):
-
+    """ Custom test case for all unit tests. """
     def setUp(self):
-        self.maxDiff = None
+        self.maxDiff = None  # pylint: disable=invalid-name
         if os.environ.get('TESTS_LOG_LEVEL_DEBUG', 'no') == 'yes':
             set_log_level(logging.DEBUG)
         else:
             set_log_level(logging.INFO)
 
-    def _addDuration(self, *args, **kwargs):  # For Python >= 3.12
+    # For Python >= 3.12
+    def _addDuration(self, *args, **kwargs):  # noqa,pylint: disable=invalid-name
         """ Python 3.12 needs subclasses of unittest.TestCase to implement
         this in order to record times and execute any cleanup actions once
         a test completes regardless of success. Otherwise it emits a warning.

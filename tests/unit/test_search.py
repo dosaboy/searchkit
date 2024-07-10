@@ -14,7 +14,7 @@ from searchkit import (
     SequenceSearchDef,
 )
 from searchkit.search import (
-    LogrotateLogSort,
+    logrotate_log_sort,
     SearchResult,
     SearchCatalog,
     SearchResultsCollection,
@@ -109,7 +109,12 @@ blah 9
 """
 
 
+class TestFailedError(Exception):
+    """ Raised when an error is identified in a test. """
+
+
 class TimestampSimple(TimestampMatcherBase):
+    """ Test timestamp implementation. """
 
     @property
     def patterns(self):
@@ -118,13 +123,15 @@ class TimestampSimple(TimestampMatcherBase):
 
 
 class TestSearchKitBase(utils.BaseTestCase):
+    """ Base class for tests. """
 
     @property
     def datetime_expr(self):
         return r"^([\d-]+\s+[\d:]+)"
 
-    def get_date(self, date):
-        cmd = ["date", "--utc", "--date={}".format(date),
+    @staticmethod
+    def get_date(date):
+        cmd = ["date", "--utc", f"--date={date}",
                '+' + TimestampSimple.DEFAULT_DATETIME_FORMAT]
         out = subprocess.check_output(cmd)
         out = re.compile(r"\s+").sub(' ', out.decode('UTF-8')).strip()
@@ -140,7 +147,8 @@ class TestSearchKitBase(utils.BaseTestCase):
         super().tearDown()
 
 
-class TestSearchKit(TestSearchKitBase):
+class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-methods
+    """ Unit tests for searchkit. """
 
     def test_resultscollection(self):
         catalog = SearchCatalog()
@@ -149,7 +157,7 @@ class TestSearchKit(TestSearchKitBase):
         rs = ResultStoreSimple()
         results = SearchResultsCollection(catalog, rs)
         self.assertEqual(len(results), 0)
-        results.add(SearchResult(0, catalog._get_source_id('a/path'),
+        results.add(SearchResult(0, catalog.get_source_id('a/path'),
                                  re.match(sd.patterns[0], '1 2 3'),
                                  search_def=sd, results_store=rs).export)
         self.assertEqual(len(results), 1)
@@ -162,7 +170,7 @@ class TestSearchKit(TestSearchKitBase):
         with tempfile.TemporaryDirectory() as dtmp:
             fpaths = [os.path.join(dtmp, fname) for fname in ['f1', 'f2']]
             for fpath in fpaths:
-                with open(fpath, 'w') as fd:
+                with open(fpath, 'w', encoding='utf-8') as fd:
                     fd.write("a key: some value\n")
                     fd.write("a key: another value\n")
 
@@ -198,7 +206,9 @@ class TestSearchKit(TestSearchKitBase):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
             for i in range(30):
-                open(os.path.join(dtmp, str(i)), 'w').close()  # noqa, pylint: disable=R1732
+                with open(os.path.join(dtmp, str(i)), 'w',
+                          encoding='utf-8') as fd:
+                    fd.write('')
 
             f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
             results = f.run()
@@ -210,10 +220,13 @@ class TestSearchKit(TestSearchKitBase):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
             for i in range(30):
-                open(os.path.join(dtmp, str(i)), 'w').close()  # noqa, pylint: disable=R1732
+                with open(os.path.join(dtmp, str(i)), 'w',
+                          encoding='utf-8') as fd:
+                    fd.write('')
 
             for i in range(30, 60):
-                with open(os.path.join(dtmp, str(i)), 'w') as fd:
+                with open(os.path.join(dtmp, str(i)), 'w',
+                          encoding='utf-8') as fd:
                     fd.write("a key: foo bar\n")
 
             f.add(SearchDef(r'.+:\s+(\S+) \S+', tag='simple'), dtmp + '/*')
@@ -226,7 +239,8 @@ class TestSearchKit(TestSearchKitBase):
         f = FileSearcher()
         with tempfile.TemporaryDirectory() as dtmp:
             for i in range(1000):
-                with open(os.path.join(dtmp, str(i)), 'w') as fd:
+                with open(os.path.join(dtmp, str(i)), 'w',
+                          encoding='utf-8') as fd:
                     fd.write("a key: foo bar\n")
                     for i in range(1000):
                         fd.write("some extra text\n")
@@ -241,7 +255,7 @@ class TestSearchKit(TestSearchKitBase):
     def test_simple_search_named_fields_no_types(self):
         f = FileSearcher()
         with tempfile.NamedTemporaryFile() as ftmp:
-            with open(ftmp.name, 'w') as fd:
+            with open(ftmp.name, 'w', encoding='utf-8') as fd:
                 fd.write("  PID TTY          TIME CMD\n"
                          "49606 pts/2    00:00:00 bash\n"
                          "49613 pts/2    00:00:00 ps\n")
@@ -264,7 +278,7 @@ class TestSearchKit(TestSearchKitBase):
     def test_simple_search_named_fields_w_types(self):
         f = FileSearcher()
         with tempfile.NamedTemporaryFile() as ftmp:
-            with open(ftmp.name, 'w') as fd:
+            with open(ftmp.name, 'w', encoding='utf-8') as fd:
                 fd.write("  PID TTY          TIME CMD\n"
                          "49606 pts/2    00:00:00 bash\n"
                          "49613 pts/2    00:00:00 ps\n")
@@ -289,7 +303,7 @@ class TestSearchKit(TestSearchKitBase):
     def test_simple_search_named_fields_w_types_orderered_dict(self):
         f = FileSearcher()
         with tempfile.NamedTemporaryFile() as ftmp:
-            with open(ftmp.name, 'w') as fd:
+            with open(ftmp.name, 'w', encoding='utf-8') as fd:
                 fd.write("  PID TTY          TIME CMD\n"
                          "49606 pts/2    00:00:00 bash\n"
                          "49613 pts/2    00:00:00 ps\n")
@@ -322,12 +336,12 @@ class TestSearchKit(TestSearchKitBase):
         with tempfile.TemporaryDirectory() as dtmp:
             try:
                 for i in range(20):
-                    fpath = os.path.join(dtmp, 'f{}'.format(i))
-                    with open(fpath, 'w') as fd:
+                    fpath = os.path.join(dtmp, f'f{i}')
+                    with open(fpath, 'w', encoding='utf-8') as fd:
                         fd.write('HEADER\n')
                         for _ in range(1000):
                             # this should be almost 100% deduped
-                            fd.write('{}\n'.format(1234))
+                            fd.write(f'{1234}\n')
 
                         fd.write('FOOTER\n')
 
@@ -354,7 +368,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == seq.end_tag:
                     self.assertEqual(r.get(1), 'FOOTER')
                 elif r.tag != seq.body_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
                 else:
                     self.assertEqual(r.get(1), '1234')
 
@@ -403,16 +417,16 @@ class TestSearchKit(TestSearchKitBase):
             # add in an erroneous file that does not follow logrotate format
             os.mknod(os.path.join(dtmp, "my-test-agent.log.tar.gz"))
             for i in range(2, 100):
-                fname = "my-test-agent.log.{}.gz".format(i)
+                fname = f"my-test-agent.log.{i}.gz"
                 os.mknod(os.path.join(dtmp, fname))
                 ordered_contents.append(fname)
-                self.assertEqual(LogrotateLogSort()(fname), i)
+                self.assertEqual(logrotate_log_sort(fname), i)
 
             ordered_contents.append("my-test-agent.log.tar.gz")
 
             contents = os.listdir(dtmp)
             self.assertEqual(sorted(contents,
-                                    key=LogrotateLogSort()),
+                                    key=logrotate_log_sort),
                              ordered_contents)
 
     def test_catalog_user_paths_overlap(self):
@@ -420,7 +434,7 @@ class TestSearchKit(TestSearchKitBase):
             logspath = os.path.join(dtmp, 'var/log')
             os.makedirs(logspath)
             logpath = os.path.join(logspath, 'foo.log')
-            with open(logpath, 'w') as fd:
+            with open(logpath, 'w', encoding='utf-8') as fd:
                 fd.write('blah')
 
             catalog = SearchCatalog(max_logrotate_depth=1)
@@ -430,7 +444,7 @@ class TestSearchKit(TestSearchKitBase):
             catalog.register(s2, os.path.join(logspath, 'foo*.log'))
             self.assertEqual(len(catalog), 1)
             self.assertEqual(list(catalog),
-                             [{'source_id': catalog._get_source_id(logpath),
+                             [{'source_id': catalog.get_source_id(logpath),
                                'path': logpath,
                                'searches': [s1, s2]}])
 
@@ -455,22 +469,19 @@ class TestSearchKit(TestSearchKitBase):
 
             max_logrotate_depth = 7
             for i in range(2, max_logrotate_depth + 10):
-                fname = os.path.join(dtmp,
-                                     "my-test-agent.1.log.{}.gz".format(i))
+                fname = os.path.join(dtmp, f"my-test-agent.1.log.{i}.gz")
                 os.mknod(fname)
                 if i <= max_logrotate_depth:
                     dir_contents.append(fname)
 
             for i in range(2, max_logrotate_depth + 10):
-                fname = os.path.join(dtmp,
-                                     "my-test-agent.49.log.{}.gz".format(i))
+                fname = os.path.join(dtmp, f"my-test-agent.49.log.{i}.gz")
                 os.mknod(fname)
                 if i <= max_logrotate_depth:
                     dir_contents.append(fname)
 
             for i in range(2, max_logrotate_depth + 10):
-                fname = os.path.join(dtmp,
-                                     "my-test-agent.100.log.{}.gz".format(i))
+                fname = os.path.join(dtmp, f"my-test-agent.100.log.{i}.gz")
                 os.mknod(fname)
                 if i <= max_logrotate_depth:
                     dir_contents.append(fname)
@@ -478,7 +489,7 @@ class TestSearchKit(TestSearchKitBase):
             exp = sorted(dir_contents)
             path = os.path.join(dtmp, 'my-test-agent*.log*')
             depth = max_logrotate_depth
-            act = sorted(SearchCatalog(max_logrotate_depth=depth).
+            act = sorted(SearchCatalog(max_logrotate_depth=depth).  # noqa,pylint: disable=protected-access
                          _filtered_dir(glob.glob(path)))
             self.assertEqual(act, exp)
 
@@ -501,7 +512,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
                 elif r.tag != sd.body_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_2,
                          'atestfile2': SEQ_TEST_2})
@@ -527,7 +538,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
                 elif r.tag != sd.body_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_3,
                          'atestfile2': SEQ_TEST_3})
@@ -553,7 +564,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(1), "ending")
                 elif r.tag != sd.body_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_4})
     def test_sequence_searcher_incomplete_eof_match(self):
@@ -576,7 +587,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(0), "")
                 else:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_5})
     def test_sequence_searcher_multiple_sections(self):
@@ -599,7 +610,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.end_tag:
                     self.assertEqual(r.get(0), "")
                 else:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_6})
     def test_sequence_searcher_eof(self):
@@ -629,7 +640,7 @@ class TestSearchKit(TestSearchKitBase):
                     else:
                         self.assertTrue(r.get(0) in ["2_1"])
                 elif r.tag != sd.end_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': SEQ_TEST_7})
     def test_sequence_searcher_section_start_end_same(self):
@@ -655,7 +666,7 @@ class TestSearchKit(TestSearchKitBase):
                 elif r.tag == sd.body_tag:
                     self.assertTrue(r.get(0) in ["2_1"])
                 elif r.tag != sd.end_tag:
-                    raise Exception("error - tag is '{}'".format(r.tag))
+                    raise TestFailedError(f"error - tag is '{r.tag}'")
 
     @utils.create_files({'atestfile': MULTI_SEQ_TEST})
     def test_sequence_searcher_multi_sequence(self):
@@ -666,19 +677,19 @@ class TestSearchKit(TestSearchKitBase):
          * test that single incomplete result gets removed
         """
         s = FileSearcher()
-        sdA = SequenceSearchDef(start=SearchDef(r"^sectionA (\d+)"),
+        sda = SequenceSearchDef(start=SearchDef(r"^sectionA (\d+)"),
                                 body=SearchDef(r"\d_\d"),
                                 end=SearchDef(
                                             r"^section\S+ (\d+)"),
                                 tag="seqA-search-test")
-        sdB = SequenceSearchDef(start=SearchDef(r"^sectionB (\d+)"),
+        sdb = SequenceSearchDef(start=SearchDef(r"^sectionB (\d+)"),
                                 body=SearchDef(r"\d_\d"),
                                 end=SearchDef(
                                             r"^section\S+ (\d+)"),
                                 tag="seqB-search-test")
         fname = os.path.join(self.data_root, 'atestfile')
-        s.add(sdA, path=fname)
-        s.add(sdB, path=fname)
+        s.add(sda, path=fname)
+        s.add(sdb, path=fname)
         results = s.run()
         sections = results.find_sequence_by_tag('seqA-search-test')
         self.assertEqual(len(sections), 1)
@@ -694,7 +705,7 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd',
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
@@ -711,14 +722,14 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd',
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
-                         ["L{}".format(i) for i in range(5)])
+                         [f"L{i}" for i in range(5)])
 
     @utils.create_files({'atestfile': LOGS_W_TS})
     def test_logs_since_multi_valid(self):
@@ -729,7 +740,7 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
@@ -745,13 +756,13 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
-                         ["L{}".format(i) for i in range(5)])
+                         [f"L{i}" for i in range(5)])
 
     @utils.create_files({'atestfile': LOGS_W_TS})
     def test_logs_since_all_invalid(self):
@@ -762,7 +773,7 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
@@ -778,13 +789,13 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
-                         ["L{}".format(i) for i in range(5)])
+                         [f"L{i}" for i in range(5)])
 
     @utils.create_files({'atestfile': LOGS_W_TS + "\n"})
     def test_logs_since_junk_at_end_of_file(self):
@@ -795,13 +806,13 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(2) for r in results],
-                         ["L{}".format(i) for i in range(5)])
+                         [f"L{i}" for i in range(5)])
 
     @utils.create_files({'atestfile': LOGS_W_TS + "\n"})
     def test_logs_since_junk_at_end_of_file_and_start_invalid(self):
@@ -812,7 +823,7 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=1)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
@@ -828,7 +839,7 @@ class TestSearchKit(TestSearchKitBase):
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
@@ -870,7 +881,7 @@ class TestSearchKit(TestSearchKitBase):
         results = s.run()
         results = results.find_by_tag('mysd')
         self.assertEqual([r.get(1) for r in results],
-                         ["L{}".format(i) for i in range(9)])
+                         [f"L{i}" for i in range(9)])
 
     @utils.create_files({'atestfile': LOGS_W_TS})
     def test_logs_since_hours(self):
@@ -882,7 +893,7 @@ class TestSearchKit(TestSearchKitBase):
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
         s = FileSearcher(constraint=c)
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd')
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd')
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
         results = s.run()
@@ -899,7 +910,7 @@ class TestSearchKit(TestSearchKitBase):
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
         s = FileSearcher()
-        sd = SearchDef(r"{}\S+ (.+)".format(self.datetime_expr), tag='mysd',
+        sd = SearchDef(rf"{self.datetime_expr}\S+ (.+)", tag='mysd',
                        constraints=[c])
         fname = os.path.join(self.data_root, 'atestfile')
         s.add(sd, path=fname)
@@ -933,7 +944,8 @@ class TestSearchKit(TestSearchKitBase):
             with self.assertRaises(UnicodeDecodeError):
                 f.run()
 
-    def test_search_unicode_decode_no_error(self):
+    @staticmethod
+    def test_search_unicode_decode_no_error():
         f = FileSearcher(decode_errors='backslashreplace')
         with tempfile.TemporaryDirectory() as dtmp:
             fpath = os.path.join(dtmp, 'f1')

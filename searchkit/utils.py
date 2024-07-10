@@ -29,7 +29,7 @@ class MPCacheBase(ContextDecorator):
         locks_path = os.path.join(self.global_path, 'locks')
         path = os.path.join(locks_path, 'cache_all_global.lock')
         self.global_lock = fasteners.InterProcessLock(path)
-        path = os.path.join(locks_path, 'cache_{}.lock'.format(self.cache_id))
+        path = os.path.join(locks_path, f'cache_{self.cache_id}.lock')
         self.cache_lock = fasteners.InterProcessLock(path)
 
     def __enter__(self):
@@ -75,7 +75,7 @@ class MPCacheBase(ContextDecorator):
 
 
 class MPCacheSimple(MPCacheBase):
-
+    """ Multiprocessing safe simple key/value store used to cache values. """
     def __exit__(self, *exc_info):
         """ noop. """
 
@@ -130,6 +130,5 @@ class MPCacheSimple(MPCacheBase):
             return len(os.listdir(self.cache_base_path))
 
 
-# this is the default type
 class MPCache(MPCacheSimple):
-    pass
+    """ Denotes the default cache type. """

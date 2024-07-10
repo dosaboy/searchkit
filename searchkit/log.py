@@ -2,13 +2,13 @@
 import logging
 
 log = logging.getLogger('searchkit')
-logformat = ("%(asctime)s %(process)d %(levelname)s %(name)s [-] "
+LOGFORMAT = ("%(asctime)s %(process)d %(levelname)s %(name)s [-] "
              "%(message)s")
 
 
 def configure_handler():
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(logformat))
+    handler.setFormatter(logging.Formatter(LOGFORMAT))
     log.addHandler(handler)
 
 

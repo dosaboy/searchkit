@@ -2,3 +2,4 @@ flake8==6.0.0
 flake8-import-order==0.18.2
 stestr
 pylint==3.1.0
+coverage
