@@ -23,4 +23,3 @@ score=yes
 disable=
  missing-module-docstring,
  missing-function-docstring,
- too-many-lines,

@@ -15,11 +15,11 @@ from searchkit import (
 )
 from searchkit.search import (
     logrotate_log_sort,
-    SearchResult,
     SearchCatalog,
     SearchResultsCollection,
     ResultStoreSimple,
 )
+from searchkit.result import SearchResult
 from searchkit.constraints import (
     TimestampMatcherBase,
     SearchConstraintSearchSince,
