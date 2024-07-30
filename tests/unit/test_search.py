@@ -110,6 +110,11 @@ blah 8
 blah 9
 """
 
+SEARCHDEF_TEST_1 = r"""Loaded: loaded (/lib/systemd/system/rsyslog.service; enabled;)
+     Active: active (running) since Wed 2022-02-09 22:38:17 ACST; 17h ago
+
+Feb 09 22:38:17 compute4 systemd[1]: Starting System Logging Service..."""
+
 
 class TimestampSimple(TimestampMatcherBase):
 
@@ -969,6 +974,49 @@ class TestSearchKit(TestSearchKitBase):
 
             f.add(SearchDef(r'(.+)', tag='simple'), fpath)
             f.run()
+
+
+    @utils.create_files({'atestfile': SEARCHDEF_TEST_1})
+    def test_bbbb(self):
+        sdef = self.make_searchdef(r"\s+Active: active \(?\S*\)?\s*since "
+                                    r"\S{3} (\d{4}-\d{2}-\d{2} "
+                                    r"\d{2}:\d{2}:\d{2} [\w\+:-]+);")
+        fname = os.path.join(self.data_root, 'atestfile')
+        s = FileSearcher()
+        s.add(sdef, path=fname)
+        results = s.run()
+        #results = results.find_by_tag('mysd')
+        print(results)
+
+    def test_aaaa(self):
+        rsyslog_systemctl_status_template = r"""
+* rsyslog.service - System Logging Service
+     Loaded: loaded (/lib/systemd/system/rsyslog.service; enabled;)
+     Active: active (running) since Wed 2022-02-09 22:38:17 ACST; 17h ago
+
+Feb 09 22:38:17 compute4 systemd[1]: Starting System Logging Service...
+
+* secureboot-db.service - Secure Boot updates for DB and DBX"""
+        seqdef = SequenceSearchDef(
+                        start=self.make_searchdef(r'\S+ ({}.service) -'.format("rsyslog")),
+                        body=self.make_searchdef(r"\s+Active: active \(?\S*\)?\s*since "
+                                    r"\S{3} (\d{4}-\d{2}-\d{2} "
+                                    r"\d{2}:\d{2}:\d{2} [\w\+:-]+);"),
+                        end=self.make_searchdef(r'(\S+) \S+.service'),
+                        tag='systemd')
+
+        s = FileSearcher(decode_errors='backslashreplace')
+        with tempfile.NamedTemporaryFile() as ftmp:
+            with open(ftmp.name, 'w') as fd:
+                fd.write(rsyslog_systemctl_status_template)
+            s.add(seqdef, path=ftmp.name)
+            sections = list(s.run().find_sequence_sections(seqdef).values())
+            #sections = results.find_sequence_by_tag('systemd')
+            self.assertEqual(len(sections), 1)
+            for result in sections[0]:
+                print(result.tag)
+                if result.tag == seqdef.body_tag:
+                    print(result.get(1))
 
 
 # Reuse the existing tests for hyperscan as well.

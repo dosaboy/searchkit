@@ -19,7 +19,7 @@ from collections import namedtuple, UserDict, UserList
 from functools import cached_property
 
 import hyperscan
-from searchkit.log import log
+from searchkit.log import log, initialize_new_logger
 from searchkit.constraints import CouldNotApplyConstraint
 
 RESULTS_QUEUE_TIMEOUT = 60
@@ -86,6 +86,7 @@ class SearchDef(SearchDefBase):
         self.tag = tag
         self.field_info = field_info
         self.hint = hint
+        log.setLevel(10)
         if hint:
             self.hint = re.compile(hint)
 
@@ -104,17 +105,22 @@ class SearchDef(SearchDefBase):
         """
         self.sequence_def = sequence_def
         self.tag = tag
+        print("link " + tag + " to id " + self.id)
 
     def run(self, line):
         """ Execute search patterns against line and return first match. """
+        print("-------------------------------")
+        print("searching line " + line)
         if self.hint:
             ret = self.hint.search(line)
             if not ret:
                 return None
 
         ret = None
+        print("id + " +self.id + " scan call")
         for pattern in self.patterns:
             ret = pattern.match(line)
+            print("groups: " + str(ret))
             if ret:
                 break
 
@@ -146,6 +152,8 @@ class HyperscanSearchDef(SearchDefBase):
     # are multithread/multiprocess safe by default.
     hs_databases = {}
 
+    logger = initialize_new_logger("searchkit.hs")
+
     def _compile_hs_db(self, patterns, *args, **kwargs):
         db = hyperscan.Database(*args, **kwargs)
         expressions, ids, flags = [], [], []
@@ -157,7 +165,7 @@ class HyperscanSearchDef(SearchDefBase):
             group_names[i] = group_name
 
         db.compile(expressions=expressions, ids=ids, flags=flags)
-        log.debug(
+        self.logger.debug(
             "compiled hyperscan db for tag %s:"
             "%s, size: %d byte(s)",
             self.tag, db.info().decode(), db.size())
@@ -173,10 +181,13 @@ class HyperscanSearchDef(SearchDefBase):
         """
         self.sequence_def = sequence_def
         self.tag = tag
+        print("link " + tag + " to id " + self.id)
 
     def __init__(self, pattern, tag=None, hint=None,
                  store_result_contents=True, field_info=None,
                  **kwargs) -> None:
+        self.logger.setLevel(10)
+        log.setLevel(10)
         self.tag = tag
         self.hint = hint  # not used atm.
         self.sequence_def = None
@@ -199,6 +210,8 @@ class HyperscanSearchDef(SearchDefBase):
 
     def run(self, line):
         match_result = None
+
+        print("searching line " + line)
 
         class match_object:
             """An object type that mimics the
@@ -224,11 +237,17 @@ class HyperscanSearchDef(SearchDefBase):
 
             for i, (_cap_flags, cap_from, cap_to) in enumerate(captured):
                 match_result[i] = line[cap_from:cap_to]
+                print(f"match result {i}: " + match_result[i])
+                self.logger.debug("match result %d: %s", i, match_result[i])
+
 
         def on_match(_id, _start, _end, _flags, _ctx):
+            nonlocal line
+            print("prefilter match: " + line)
+            self.logger.debug("match %s", line)
             HyperscanSearchDef.hs_databases[self.id]['group'].scan(
                 line.encode(), gm_on_match)
-
+        print("id + " +self.id + " scan call")
         HyperscanSearchDef.hs_databases[self.id]['prefilter'].scan(
             line.encode(), on_match)
 
@@ -266,6 +285,7 @@ class SequenceSearchDef(SearchDefBase):
                 sd.link_to_sequence(self, _tag)
 
         self._mark = None
+        self._body_found = False
         # Each section matched gets its own id. Since each file is processed
         # using a separate process and memory is not shared, these values must
         # be unique to avoid collisions when results are aggregated.
@@ -300,6 +320,14 @@ class SequenceSearchDef(SearchDefBase):
         """ Indicate a section sequence has been started. """
         return self._mark == 1
 
+
+    def mark_body_as_found(self):
+        self._body_found = True
+
+    @property
+    def body_found(self):
+        return self._body_found
+
     def start(self):
         """ Indicate that a sequence start has been detected. """
         self._section_id = str(uuid.uuid4())
@@ -313,10 +341,11 @@ class SequenceSearchDef(SearchDefBase):
         expression matches midway through a sequence (and before the end).
         """
         self._mark = 0
+        self._body_found = False
 
     def stop(self):
         """ Indicate that a sequence is complete. """
-        self._mark = 0
+        self.reset()
         if self.current_section_id is None:
             raise FileSearchException("sequence section id is None")
 
@@ -1110,7 +1139,54 @@ class SearchTask(object):
         if len(self.buffered_results) >= NUM_BUFFERED_RESULTS:
             self._flush_results_buffer()
 
-    def _sequence_search(self, seq_def, line, ln, sequence_results):
+    #def _run_sequence_searchdef(self, searchdef)
+
+    def _sequence_search(self, seq_def, line, line_number, results):
+        start_result = seq_def.s_start.run(line)
+        if start_result:
+            if not seq_def.started:
+                seq_def.start()
+            # Remove the previous start
+            results[seq_def.id] = SearchResult(
+                    line_number, self.info['source_id'], start_result,
+                    seq_def.s_start, self.results_store,
+                    seq_def.current_section_id)
+
+            return
+        else:
+            if not seq_def.started:
+                return
+
+        # Line does not match start pattern and sequence start is found.
+        ### CONTINUE FROM HERE ###
+        # Search has been started, sequence_def contains a body searchdef
+        # and the body has not been found yet. Search for the body.
+        if seq_def.s_body and not seq_def.body_found:
+            body_result = seq_def.s_body.run(line)
+            print("body result " + str(body_result))
+            if body_result:
+                seq_def.mark_body_as_found()
+                results.add(
+                    SearchResult(
+                        line_number, self.info['source_id'], body_result,
+                        seq_def.s_body, self.results_store,
+                        seq_def.current_section_id))
+                return
+
+        if seq_def.s_end:
+            end_result = seq_def.s_end.run(line)
+            if end_result:
+                results.add(
+                    SearchResult(
+                        line_number, self.info['source_id'], end_result,
+                        seq_def.s_end, self.results_store,
+                        seq_def.current_section_id))
+                seq_def.stop()
+                return
+
+
+
+    def _sequence_search_2(self, seq_def, line, ln, sequence_results):
         """ Perform a sequence search on line.
 
         @param seq_def: SequenceSearchDef object
@@ -1119,17 +1195,25 @@ class SearchTask(object):
         @param sequence_results: SequenceSearchResults object
         """
         ret = seq_def.s_start.run(line)
+        print("running s_start search")
         # if the ending is defined and we match a start while
         # already in a section, we start again.
         if seq_def.s_end and seq_def.started:
+           
             if ret:
+                print("s_end, started and ret")
+
                 # reset and start again
                 sequence_results.remove(seq_def.id)
                 seq_def.reset()
             else:
+                print("else(s_end, started and ret), end search")
                 ret = seq_def.s_end.run(line)
+                
 
         if ret:
+            print("s_end, started and ret")
+            
             if not seq_def.started:
                 s_term = seq_def.s_start
                 seq_def.start()
