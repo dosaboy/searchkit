@@ -198,9 +198,13 @@ class TestSearchConstraints(TestSearchKitBase):
         with open(_file, 'w') as fd:
             fd.write('somejunk\n' * 501 + LOGS_W_TS)
 
-        with open(_file, 'rb') as fd:
-            offset = c.apply_to_file(fd)
-            self.assertEqual(offset, 0)
+        with self.assertLogs(logger="searchkit", level="WARNING") as log:
+            with open(_file, 'rb') as fd:
+                offset = c.apply_to_file(fd)
+                self.assertEqual(offset, 0)
+            self.assertEqual(len(log.output), 1)
+            self.assertIn("failed to find a line containing a date: "
+                          "date search failed at offset", log.output[0])
 
         stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 0}
         self.assertEqual(c.stats(), stats)
