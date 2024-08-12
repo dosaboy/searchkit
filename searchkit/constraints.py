@@ -1,3 +1,9 @@
+""" Search constraints module.
+
+Searchkit searches are by default unbound in that they will apply to every line
+in a file or files. This may sometimes be inefficient or undesired and can be
+controlled using one of the constraints implementations provided here.
+"""
 import abc
 import re
 import uuid

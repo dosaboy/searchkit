@@ -1,3 +1,4 @@
+""" Searchkit unit tests utilities. """
 import os
 import unittest
 

@@ -1,3 +1,4 @@
+""" Searchkit interface. """
 from .search import (
     FileSearcher,
     ResultFieldInfo,

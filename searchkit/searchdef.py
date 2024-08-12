@@ -1,3 +1,4 @@
+""" Search definitions implementations. """
 import re
 import uuid
 from functools import cached_property

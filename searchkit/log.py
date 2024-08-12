@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+""" Searchkit logging. """
 import logging
 
 log = logging.getLogger('searchkit')

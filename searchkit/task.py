@@ -1,3 +1,4 @@
+""" Search task implementations. """
 import gzip
 import multiprocessing
 import os

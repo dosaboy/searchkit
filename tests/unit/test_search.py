@@ -1,3 +1,4 @@
+""" Searchkit unit tests. """
 import glob
 import os
 import re

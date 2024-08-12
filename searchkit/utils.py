@@ -1,3 +1,4 @@
+""" Search utilities. """
 import abc
 import dbm
 import os

@@ -1,3 +1,4 @@
+""" Searchkit utilities unit tests. """
 import os
 import tempfile
 

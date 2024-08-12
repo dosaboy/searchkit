@@ -1,3 +1,4 @@
+""" Searchkit search constraints unit tests. """
 import os
 import re
 import tempfile

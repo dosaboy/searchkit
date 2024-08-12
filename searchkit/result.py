@@ -1,3 +1,4 @@
+""" Search result handlers. """
 import abc
 from functools import cached_property
 from collections import UserList, UserDict

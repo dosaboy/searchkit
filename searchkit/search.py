@@ -1,3 +1,10 @@
+""" Search implementations.
+
+Searchkit supports searching one or more file in parallel using multiple
+processes to perform the searches and then collecting their results.
+
+Searches can be single or multi-line.
+"""
 import abc
 import concurrent.futures
 import copy
