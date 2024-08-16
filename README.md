@@ -1,6 +1,8 @@
 # Searchkit
 
-Python library providing tools to search files in parallel.
+Python library providing file search tools.
+
+The basic principle of searchkit is that you add one or more file or path and then register one or more search against those paths. Searches are executed in parallel and different types are supported such as simple one line search or multiline/sequence search. Constraints can optionally be applied to searches.
 
 ## Search Types
 
