@@ -17,12 +17,16 @@ import signal
 import subprocess
 import threading
 import time
-from collections import namedtuple, UserDict, UserList
+from collections import namedtuple, UserDict
+from datetime import datetime, timedelta
 
+import psutil
 from searchkit.log import log
 from searchkit.constraints import CouldNotApplyConstraint
-from searchkit.exception import FileSearchException
+from searchkit.exception import FileSearchException, ResultStoreException
 from searchkit.task import (
+    RESULTS_QUEUE_SIZE,
+    RESULTS_QUEUE_TIMEOUT,
     SearchTask,
     SearchTaskStats,
     SearchTaskResultsManager,
@@ -30,50 +34,42 @@ from searchkit.task import (
 from searchkit.searchdef import SequenceSearchDef
 
 
-RESULTS_QUEUE_TIMEOUT = 60
-MAX_QUEUE_RETRIES = 10
-RS_LOCK = multiprocessing.Lock()
-NUM_BUFFERED_RESULTS = 100
+RESULTS_COLLECTION_LOCK = multiprocessing.Lock()
+RESULTS_STORE_LOCKED = multiprocessing.Lock()
 
 
 def rs_locked(f):
     def _rs_locked_inner(*args, **kwargs):
-        with RS_LOCK:
+        with RESULTS_STORE_LOCKED:
             return f(*args, **kwargs)
 
     return _rs_locked_inner
 
 
-class ResultStoreBase(UserList):
+class ResultStoreBase(UserDict):
     """
     This class is used to de-duplicate values stored in search results such
     that allowing their reference to be saved in the result for later lookup.
     """
 
-    def __init__(self):
-        super().__init__()
-        self.counters = {}
-        self.value_store = self.data = []
-        self.tag_store = []
-        self.sequence_id_store = []
+    def __init__(self, f_allocator=None):
+        super().__init__({})
+        self.value_store = {}
+        self.tag_store = {}
+        self.sequence_id_store = {}
+        self.f_allocator = f_allocator or self._allocate_next
 
-    def __getitem__(self, result_id):
-        if result_id >= len(self.value_store):
-            return None
+    def _allocate_next(self, value):
+        for idx, _value in self.data.items():
+            if value == _value:
+                return idx
 
-        return self.value_store[result_id]
+        current = len(self.data)
+        self.data[current] = value
+        # log.debug(f"{os.getpid()} allocated {current} for '{value}'")
+        return current
 
-    @property
-    def parts_deduped(self):
-        counters = self.counters.values()
-        return sum(counters) - len(counters)
-
-    @property
-    def parts_non_deduped(self):
-        return len(self.value_store)
-
-    @staticmethod
-    def _get_store_index(value, store):
+    def _add_to_store(self, value, store, idx=None):
         """
         Add value to the provided store and return its position. If the value
         is None do not save in the store and return None.
@@ -85,10 +81,16 @@ class ResultStoreBase(UserList):
             return None
 
         if value in store:
-            return store.index(value)
+            return store[value]
 
-        store.append(value)
-        return len(store) - 1
+        if idx is None:
+            idx = self.f_allocator(value)
+
+        store[value] = idx
+        return idx
+
+    def sync(self):
+        """ Only required for parallel. """
 
     def add(self, tag, sequence_id, value):
         """
@@ -103,17 +105,10 @@ class ResultStoreBase(UserList):
         @param sequence_id: optional sequence search id
         @param value: search result value
         """
-        value_idx = self._get_store_index(value, self.value_store)
-        if value_idx is not None:
-            # increment global counter
-            if value_idx not in self.counters:
-                self.counters[value_idx] = 1
-            else:
-                self.counters[value_idx] += 1
-
-        tag_idx = self._get_store_index(tag, self.tag_store)
-        sequence_id_idx = self._get_store_index(sequence_id,
-                                                self.sequence_id_store)
+        value_idx = self._add_to_store(value, self.value_store)
+        tag_idx = self._add_to_store(tag, self.tag_store)
+        sequence_id_idx = self._add_to_store(sequence_id,
+                                             self.sequence_id_store)
         return tag_idx, sequence_id_idx, value_idx
 
 
@@ -127,28 +122,62 @@ class ResultStoreParallel(ResultStoreBase):
     def __init__(self, mgr):
         super().__init__()
         # Replace super attributes with MP-safe equivalents
-        self.counters = mgr.dict()
-        self.value_store = self.data = mgr.list()
-        self.tag_store = mgr.list()
-        self.sequence_id_store = mgr.list()
+        self.data = mgr.dict()
+        self.value_store = mgr.dict()
+        self.tag_store = mgr.dict()
+        self.sequence_id_store = mgr.dict()
+        # Set my worker process to a local ResultStoreSimple st6re. This is
+        # used store/collect results locally so that we do not need to sync()
+        # with the main store until the end which is a slow action.
+        self.local_store = None
 
-    @rs_locked
-    def __getitem__(self, result_id):
-        return super().__getitem__(result_id)
+    def _allocate_next(self, value):
+        """
+        We allocate from the shared store but save to the local store. This way
+        allocations are global/shared between all workers. When we finally sync
+        the local store to the shared store the allocations will not conflict.
+        """
+        with RESULTS_STORE_LOCKED:
+            return super()._allocate_next(value)
 
-    @rs_locked
+    @property
+    def local(self):
+        """ Each worker process will end up with its own local store.
+
+        Contents must be copied into the the shared store once finished by
+        calling sync().
+        """
+        pid = os.getpid()
+        if self.local_store is None:
+            log.debug("new local store for pid=%s", pid)
+            store = ResultStoreSimple(f_allocator=self._allocate_next)
+            self.local_store = {'store': store, 'owner': pid}
+        elif self.local_store['owner'] != pid:
+            raise ResultStoreException("local store not created by current "
+                                       f"pid ({pid})")
+
+        return self.local_store['store']
+
     def add(self, *args, **kwargs):
-        return super().add(*args, **kwargs)
+        """ Add to local store. """
+        return self.local.add(*args, **kwargs)
 
-    @property
     @rs_locked
-    def parts_deduped(self):
-        return super().parts_deduped
+    def sync(self):
+        """
+        Sync local store data into the global/shared store. This must be called
+        by the worker process that owns the local store once it has finished
+        adding to the store.
+        """
+        log.debug("syncing local results to shared store")
+        for value, idx in self.local.value_store.items():
+            self._add_to_store(value, self.value_store, idx=idx)
 
-    @property
-    @rs_locked
-    def parts_non_deduped(self):
-        return super().parts_non_deduped
+        for value, idx in self.local.tag_store.items():
+            self._add_to_store(value, self.tag_store, idx=idx)
+
+        for value, idx in self.local.sequence_id_store.items():
+            self._add_to_store(value, self.sequence_id_store, idx=idx)
 
     @rs_locked
     def unproxy_results(self):
@@ -157,10 +186,10 @@ class ResultStoreParallel(ResultStoreBase):
         once their manager is gone.
         """
         log.debug("unproxying results store (data=%s)", len(self.value_store))
-        self.value_store = self.data = copy.deepcopy(self.data)
+        self.data = copy.deepcopy(self.data)
+        self.value_store = copy.deepcopy(self.value_store)
         self.tag_store = copy.deepcopy(self.tag_store)
         self.sequence_id_store = copy.deepcopy(self.sequence_id_store)
-        self.counters = self.counters.copy()
 
 
 class ResultFieldInfo(UserDict):
@@ -231,14 +260,15 @@ class SearchResultsCollection(UserDict):
     def files(self):
         return list(self._results_by_path.keys())
 
-    def add(self, result):
-        result.register_results_store(self.results_store)
-        # resolve
-        path = self.search_catalog.source_id_to_path(result.source_id)
-        if path not in self._results_by_path:
-            self._results_by_path[path] = [result]
-        else:
-            self._results_by_path[path].append(result)
+    def add(self, results):
+        for result in results:
+            result.register_results_store(self.results_store)
+            # resolve
+            path = self.search_catalog.source_id_to_path(result.source_id)
+            if path not in self._results_by_path:
+                self._results_by_path[path] = [result]
+            else:
+                self._results_by_path[path].append(result)
 
     def find_by_path(self, path):
         """ Return results for a given path. """
@@ -596,6 +626,29 @@ class SearchConstraintsManager():
         return Result(any_passed, all_passed)
 
 
+class ThreadManager():
+    """ Manage threads used by the searcher. """
+    def __init__(self, name, func, args):
+        log.debug("creating %s thread", name)
+        self.name = name
+        self.event = threading.Event()
+        self.event.clear()
+        self.thread = threading.Thread(target=func, args=[self.event, *args])
+        self.running = False
+
+    def start(self):
+        self.thread.start()
+        self.running = True
+
+    def stop(self):
+        if self.running:
+            log.debug("joining/stopping queue %s thread", self.name)
+            self.event.set()
+            self.thread.join()
+            self.running = False
+            log.debug("%s thread stopped successfully", self.name)
+
+
 class FileSearcher(SearcherBase):
     """ Searcher implementation used to search filesystem locations. """
     def __init__(self, max_parallel_tasks=8, max_logrotate_depth=7,
@@ -663,31 +716,69 @@ class FileSearcher(SearcherBase):
         return self._stats
 
     @staticmethod
-    def _get_results(results, results_queue, event, stats):
+    def _get_info(event, results, results_store, stats, proc):
         """
         Collect results from all search task processes.
 
+        @param event: threading.Event() object used to stop this thread.
         @param results: SearchResultsCollection object.
-        @param results_queue: results queue used for this search session.
-        @param event: event object used to notify this thread to stop.
+        @param results_store: ResultStore* holding results from workers.
         @param stats: SearchTaskStats object
+        @param proc: psutil.Process() object for local process.
+        """
+        then = None
+        while True:
+            if event.is_set():
+                log.debug("exiting info thread")
+                break
+
+            if not then or datetime.now() >= then + timedelta(seconds=5):
+                with RESULTS_STORE_LOCKED:
+                    allocations = len(results_store)
+
+                with RESULTS_COLLECTION_LOCK:
+                    num_results = len(results)
+
+                rss = int(proc.memory_info().rss / 1024 ** 2)
+                log.debug("total %s results received (rss=%sM, "
+                          "store_allocations=%s), "
+                          "%s/%s jobs completed - "
+                          "waiting for more", num_results, rss,
+                          allocations,
+                          stats['jobs_completed'], stats['total_jobs'])
+
+                then = datetime.now()
+
+            time.sleep(1)
+
+    @staticmethod
+    def _get_results(event, results, results_queue):
+        """
+        Collect results from all search task processes.
+
+        @param event: threading.Event() object used to stop this thread.
+        @param results: SearchResultsCollection object.
+        @param results_queue: results queue used to collect results from
+                              workers.
         """
         log.debug("fetching results from worker queues")
-
         while True:
             if not results_queue.empty():
-                results.add(results_queue.get())
+                with RESULTS_COLLECTION_LOCK:
+                    results.add(results_queue.get())
+
+                # if len(results) % 1000 == 0:
+                #     log.debug("received %s results", len(results))
             elif event.is_set():
                 log.debug("exiting results thread")
                 break
             else:
-                log.debug("total %s results received, %s/%s jobs completed - "
-                          "waiting for more", len(results),
-                          stats['jobs_completed'], stats['total_jobs'])
                 # yield
                 time.sleep(0.1)
 
-        log.debug("stopped fetching results (total received=%s)", len(results))
+        with RESULTS_COLLECTION_LOCK:
+            log.debug("stopped fetching results (total received=%s)",
+                      len(results))
 
     @staticmethod
     def _purge_results(results, results_queue, expected):
@@ -703,36 +794,22 @@ class FileSearcher(SearcherBase):
         log.debug("purging results (expected=%s)", expected)
 
         while True:
-            if not results_queue.empty():
-                results.add(results_queue.get())
-            elif expected > len(results):
-                try:
-                    r = results_queue.get(timeout=RESULTS_QUEUE_TIMEOUT)
-                    results.add(r)
-                except queue.Empty:
-                    log.info("timeout waiting > %s secs to receive results - "
-                             "expected=%s, actual=%s", RESULTS_QUEUE_TIMEOUT,
-                             expected, len(results))
-            else:
-                break
+            with RESULTS_COLLECTION_LOCK:
+                if not results_queue.empty():
+                    results.add(results_queue.get())
+                elif expected > len(results):
+                    try:
+                        results.add(results_queue.get(
+                            timeout=RESULTS_QUEUE_TIMEOUT))
+                    except queue.Empty:
+                        log.info("timeout waiting > %s secs to receive "
+                                 "results - expected=%s, actual=%s",
+                                 RESULTS_QUEUE_TIMEOUT, expected, len(results))
+                else:
+                    break
 
         log.debug("stopped purging results (total received=%s)",
                   len(results))
-
-    def _create_results_thread(self, results, results_queue, stats):
-        log.debug("creating results queue consumer thread")
-        event = threading.Event()
-        event.clear()
-        t = threading.Thread(target=self._get_results,
-                             args=[results, results_queue, event, stats])
-        return t, event
-
-    @staticmethod
-    def _stop_results_thread(thread, event):
-        log.debug("joining/stopping queue consumer thread")
-        event.set()
-        thread.join()
-        log.debug("consumer thread stopped successfully")
 
     @staticmethod
     def _ensure_worker_processes_killed():
@@ -791,11 +868,12 @@ class FileSearcher(SearcherBase):
         @param mgr: multiprocessing.Manager object
         @param results: SearchResultsCollection object
         """
-        results_queue = mgr.Queue()
-        results_thread, event = self._create_results_thread(results,
-                                                            results_queue,
-                                                            self.stats)
-        results_thread_started = False
+        results_queue = mgr.Queue(RESULTS_QUEUE_SIZE)
+        info_thread = ThreadManager('info', self._get_info,
+                                    [results, results_store, self.stats,
+                                     psutil.Process()])
+        results_thread = ThreadManager('results', self._get_results,
+                                       [results, results_queue])
         results_manager = SearchTaskResultsManager(
                             results_store,
                             results_queue=results_queue)
@@ -815,8 +893,8 @@ class FileSearcher(SearcherBase):
                     self.stats['total_jobs'] += 1
 
                 log.debug("filesearcher: syncing %s job(s)", len(jobs))
+                info_thread.start()
                 results_thread.start()
-                results_thread_started = True
                 try:
                     for future in concurrent.futures.as_completed(jobs):
                         self.stats.update(future.result())
@@ -835,8 +913,8 @@ class FileSearcher(SearcherBase):
                         log.info("job for path '%s' still running when "
                                  "not expected to be", path)
 
-                self._stop_results_thread(results_thread, event)
-                results_thread = None
+                results_thread.stop()
+                info_thread.stop()
                 log.debug("purging remaining results (expected=%s, "
                           "remaining=%s)", self.stats['results'],
                           self.stats['results'] - len(results))
@@ -846,8 +924,8 @@ class FileSearcher(SearcherBase):
                 self._ensure_worker_processes_killed()
                 log.debug("terminating pool")
         finally:
-            if results_thread is not None and results_thread_started:
-                self._stop_results_thread(results_thread, event)
+            results_thread.stop()
+            info_thread.stop()
 
     def run(self):
         """ Run all searches.
@@ -871,16 +949,12 @@ class FileSearcher(SearcherBase):
                 rs = ResultStoreParallel(mgr)
                 results = SearchResultsCollection(self.catalog, rs)
                 self._run_mp(mgr, results, rs)
-                self.stats['parts_deduped'] = rs.parts_deduped
-                self.stats['parts_non_deduped'] = rs.parts_non_deduped
                 rs.unproxy_results()
         else:
             log.debug("running searches (parallel=False)")
             rs = ResultStoreSimple()
             results = SearchResultsCollection(self.catalog, rs)
             self._run_single(results, rs)
-            self.stats['parts_deduped'] = rs.parts_deduped
-            self.stats['parts_non_deduped'] = rs.parts_non_deduped
 
         log.debug("filesearcher: completed (%s)", self.stats)
         return results

@@ -57,12 +57,15 @@ class SearchResultBase(UserList):
     def __iter__(self):
         """ Only return part values when iterating over this object. """
         for part in self.data:
-            yield self.results_store[part[self.PART_OFFSET_VALUE]]
+            yield self.results_store.get(part[self.PART_OFFSET_VALUE])
 
     def __repr__(self):
-        r_list = [f"{rp[self.PART_OFFSET_IDX]}="
-                  f"'{self.results_store[rp[self.PART_OFFSET_VALUE]]}'"
-                  for rp in self.data]
+        if self.results_store is None:
+            r_list = []
+        else:
+            r_list = [f"{rp[self.PART_OFFSET_IDX]}="
+                      f"'{self.results_store.get(rp[self.PART_OFFSET_VALUE])}'"
+                      for rp in self.data]
         return (f"ln:{self.linenumber} {', '.join(r_list)} "
                 f"(section={self.section_id})")
 
@@ -111,7 +114,7 @@ class SearchResultMinimal(SearchResultBase):
         if idx is None:
             return None
 
-        return self.results_store.tag_store[idx]
+        return self.results_store.get(idx)
 
     @property
     def sequence_id(self):
@@ -119,7 +122,7 @@ class SearchResultMinimal(SearchResultBase):
         if idx is None:
             return None
 
-        return self.results_store.sequence_id_store[idx]
+        return self.results_store.get(idx)
 
     def register_results_store(self, store):
         """

@@ -1,12 +1,13 @@
 """ Search task implementations. """
 import gzip
-import multiprocessing
 import os
 import queue
+import time
 import uuid
 from functools import cached_property
-from collections import UserDict
+from collections import UserDict, UserList
 
+import psutil
 from searchkit.log import log
 from searchkit.result import (
     SearchResult,
@@ -17,8 +18,8 @@ from searchkit.searchdef import SequenceSearchDef
 
 RESULTS_QUEUE_TIMEOUT = 60
 MAX_QUEUE_RETRIES = 10
-RS_LOCK = multiprocessing.Lock()
-NUM_BUFFERED_RESULTS = 100
+RESULTS_QUEUE_SIZE = 100000
+NUM_BUFFERED_RESULTS = int(RESULTS_QUEUE_SIZE / 10) or 1
 
 
 class SearchTaskError(Exception):
@@ -63,6 +64,12 @@ class SearchTaskResultsManager():
         return self._results_collection
 
 
+class QueueTransitBuffer(UserList):
+    """ A variable length buffer for the transfer of results back to the main
+    collector process."""
+    MAX = 10
+
+
 class SearchTask():  # pylint: disable=too-many-instance-attributes
     """ Search task implementation for all searches. """
     def __init__(self, info, constraints_manager, results_manager,
@@ -76,6 +83,7 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
         @param results_manager: SearchTaskResultsManager object
         @param decode_errors: unicode decode error handling.
         """
+        self.proc = None
         self.info = info
         self.stats = SearchTaskStats()
         self.constraints_manager = constraints_manager
@@ -83,7 +91,7 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
         self.decode_kwargs = {}
         if decode_errors:
             self.decode_kwargs['errors'] = decode_errors
-        self.buffered_results = []
+        self.results_buffer = []
 
     @cached_property
     def id(self):
@@ -103,46 +111,70 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
 
         return alldefs
 
-    def put_result(self, result):
-        self.stats['results'] += 1
+    def put_result(self, results):
+        self.stats['results'] += len(results)
         if self.results_manager.results_collection is not None:
-            self.results_manager.results_collection.add(result)
+            self.results_manager.results_collection.add(results)
             return
 
+        backoff = 1
         max_tries = MAX_QUEUE_RETRIES
         while max_tries > 0:
             try:
                 if max_tries == MAX_QUEUE_RETRIES:
-                    self.results_manager.results_queue.put_nowait(result)
+                    self.results_manager.results_queue.put_nowait(results)
                 else:
                     self.results_manager.results_queue.put(
-                        result,
+                        results,
                         timeout=RESULTS_QUEUE_TIMEOUT)
 
                 break
             except queue.Full:
                 if max_tries == MAX_QUEUE_RETRIES:
-                    msg = ("search task queue for '%s' is full - switching "
-                           "to using blocking put with timeout")
-                    log.info(msg, self.info['path'])
+                    msg = ("result queue for task '%s' is full (size=%s) - "
+                           "switching to blocking put with timeout "
+                           "(retries=%s, backoff=%ss)")
+                    log.info(msg, self.info['path'], RESULTS_QUEUE_SIZE,
+                             max_tries, backoff)
                 else:
-                    msg = ("search task queue for '%s' is full even after "
-                           "waiting %ss - trying again")
-                    log.warning(msg, self.info['path'],
-                                RESULTS_QUEUE_TIMEOUT)
+                    msg = ("result queue for task '%s' is still full even "
+                           "after waiting %ss - trying again "
+                           "(retries=%s, backoff=%ss)")
+                    log.warning(msg, self.info['path'], RESULTS_QUEUE_TIMEOUT,
+                                max_tries, backoff)
 
                 max_tries -= 1
+                # backoff for short while to allow queue contents to be
+                # consumed.
+                time.sleep(backoff)
+                if backoff < RESULTS_QUEUE_TIMEOUT:
+                    backoff *= 2
 
         if max_tries == 0:
             log.error("exceeded max number of retries (%s) to put results "
                       "data on the queue", MAX_QUEUE_RETRIES)
 
-    def _flush_results_buffer(self):
-        # log.debug("flushing results buffer (%s)", len(self.buffered_results))
-        for result in self.buffered_results:
-            self.put_result(result)
+    def show_mem_usage(self, label):
+        if self.proc is None:
+            self.proc = psutil.Process()
+        log.debug('%s (rss=%sM)', label,
+                  int(self.proc.memory_info().rss / 1024 ** 2))
 
-        self.buffered_results = []
+    def _flush_results_buffer(self):
+        # log.debug("flushing results buffer (%s)", len(self.results_buffer))
+        # self.show_mem_usage('before')
+        limit = QueueTransitBuffer.MAX
+        while self.results_buffer:
+            try:
+                buffr = QueueTransitBuffer(self.results_buffer[:limit])
+                self.put_result(buffr)
+                for _ in range(limit):
+                    self.results_buffer.pop(0)
+
+            except IndexError:
+                limit -= 1
+
+        # self.show_mem_usage('after')
 
     def _simple_search(self, search_def, line, ln):
         """ Perform a simple search on line.
@@ -157,8 +189,8 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
 
         result = SearchResult(ln, self.info['source_id'], ret, search_def,
                               self.results_manager.results_store)
-        self.buffered_results.append(result.export)
-        if len(self.buffered_results) >= NUM_BUFFERED_RESULTS:
+        self.results_buffer.append(result.export)
+        if len(self.results_buffer) >= NUM_BUFFERED_RESULTS:
             self._flush_results_buffer()
 
     def _sequence_search(self, seq_def, line, ln, sequence_results):
@@ -268,8 +300,8 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
                         if r.section_id in filter_section_id[seq_id]:
                             continue
 
-                self.buffered_results.append(r.export)
-                if len(self.buffered_results) >= NUM_BUFFERED_RESULTS:
+                self.results_buffer.append(r.export)
+                if len(self.results_buffer) >= NUM_BUFFERED_RESULTS:
                     self._flush_results_buffer()
 
     def _run_search(self, fd):
@@ -286,10 +318,10 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
                     for s, _runnable in self.search_defs.items()}
         ln = 0
         # NOTE: line numbers start at 1 hence offset + 1
-        for ln, line in enumerate(fd, start=offset + 1):
+        for ln, line in enumerate(fd, start=1):
             # This could be helpful to show progress for large files
             if ln % 100000 == 0:
-                log.debug("%s lines searched in %s", ln, fd.name)
+                self.show_mem_usage(f"{ln} lines searched in {fd.name}")
 
             self.stats['lines_searched'] += 1
             line = line.decode("utf-8", **self.decode_kwargs)
@@ -366,6 +398,7 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
                    f"- {e}")
             raise FileSearchException(msg) from e
 
+        self.results_manager.results_store.sync()
         log.debug("finished execution on path %s", path)
         return stats
 

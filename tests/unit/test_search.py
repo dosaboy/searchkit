@@ -1,5 +1,6 @@
 """ Searchkit unit tests. """
 import glob
+import multiprocessing
 import os
 import re
 import tempfile
@@ -19,6 +20,7 @@ from searchkit.search import (
     SearchCatalog,
     SearchResultsCollection,
     ResultStoreSimple,
+    ResultStoreParallel,
 )
 from searchkit.result import SearchResult
 from searchkit.constraints import (
@@ -158,9 +160,10 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         rs = ResultStoreSimple()
         results = SearchResultsCollection(catalog, rs)
         self.assertEqual(len(results), 0)
-        results.add(SearchResult(0, catalog.get_source_id('a/path'),
-                                 re.match(sd.patterns[0], '1 2 3'),
-                                 search_def=sd, results_store=rs).export)
+        result = SearchResult(0, catalog.get_source_id('a/path'),
+                              re.match(sd.patterns[0], '1 2 3'),
+                              search_def=sd, results_store=rs).export
+        results.add([result])
         self.assertEqual(len(results), 1)
         for path, _results in results.items():
             self.assertEqual(path, 'a/path')
@@ -355,9 +358,6 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
                 results = f.run()
             finally:
                 shutil.rmtree(dtmp)
-
-            self.assertEqual(f.stats['parts_deduped'], 40037)
-            self.assertEqual(f.stats['parts_non_deduped'], 3)
 
         self.assertEqual(len(results), 40040)
         self.assertEqual(len(results.find_by_tag('simple')), 20000)
@@ -924,15 +924,12 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         for val in ['foo', 'bar', 'foo']:
             sri.add('atag', None, val)
 
-        self.assertEqual(sri, ['foo', 'bar'])
-        self.assertEqual(sri.counters, {0: 2, 1: 1})
-        self.assertEqual(sri.tag_store, ['atag'])
+        self.assertEqual(list(sri.values()), ['foo', 'atag', 'bar'])
+        self.assertEqual(sri.tag_store, {'atag': 1})
         self.assertEqual(sri[0], 'foo')
 
-        self.assertEqual(sri[1], 'bar')
-        self.assertEqual(sri[2], None)
-        self.assertEqual(sri.parts_deduped, 1)
-        self.assertEqual(sri.parts_non_deduped, 2)
+        self.assertEqual(sri[2], 'bar')
+        self.assertEqual(sri.get(109238), None)
 
     def test_search_unicode_decode_w_error(self):
         f = FileSearcher()
@@ -955,3 +952,36 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
 
             f.add(SearchDef(r'(.+)', tag='simple'), fpath)
             f.run()
+
+
+class TestResultStore(TestSearchKitBase):
+    """ Test results store implementations. """
+
+    def rs_tests(self, rs):
+        self.assertEqual(rs.add(None, None, 'foo'), (None, None, 0))
+        self.assertEqual(rs.add(None, None, 'bar'), (None, None, 1))
+        self.assertEqual(rs.add(None, None, 'foo'), (None, None, 0))
+        self.assertEqual(rs.add('tag1', None, 'foo'), (2, None, 0))
+        self.assertEqual(rs.add('tag1', 'seq1', 'foo'), (2, 3, 0))
+        self.assertEqual(rs.add('tag1', 'seq1', 'foo'), (2, 3, 0))
+        rs.sync()
+
+    def test_resultstore_simple(self):
+        rs = ResultStoreSimple()
+        self.rs_tests(rs)
+        self.assertEqual(rs[0], 'foo')
+        self.assertEqual(rs[1], 'bar')
+        self.assertEqual(rs[2], 'tag1')
+        self.assertEqual(rs[3], 'seq1')
+
+    def test_resultstore_parallel(self):
+        with multiprocessing.Manager() as mgr:
+            rs = ResultStoreParallel(mgr)
+            p = multiprocessing.Process(target=self.rs_tests, args=(rs, ))
+            p.start()
+            p.join()
+            rs.unproxy_results()
+            self.assertEqual(rs[0], 'foo')
+            self.assertEqual(rs[1], 'bar')
+            self.assertEqual(rs[2], 'tag1')
+            self.assertEqual(rs[3], 'seq1')
