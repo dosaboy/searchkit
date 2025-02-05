@@ -19,8 +19,7 @@ name = "searchkit"
 description = "Python library providing tools to search files in parallel."
 readme="README.md"
 requires-python = ">=3.8"
-dynamic = ["version"]
-dependencies = [
-    'importlib-metadata; python_version >= "3.8"',
-    'fasteners', 'psutil'
-]
+dynamic = ["version", "dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
