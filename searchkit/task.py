@@ -131,17 +131,14 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
                 break
             except queue.Full:
                 if max_tries == MAX_QUEUE_RETRIES:
-                    msg = ("result queue for task '%s' is full (size=%s) - "
-                           "switching to blocking put with timeout "
-                           "(retries=%s, backoff=%ss)")
-                    log.info(msg, self.info['path'], RESULTS_QUEUE_SIZE,
-                             max_tries, backoff)
+                    msg = ("result queue full (size=%s) - "
+                           "switching to blocking put (retries=%s, "
+                           "backoff=%ss)")
+                    log.debug(msg, RESULTS_QUEUE_SIZE, max_tries, backoff)
                 else:
-                    msg = ("result queue for task '%s' is still full even "
-                           "after waiting %ss - trying again "
-                           "(retries=%s, backoff=%ss)")
-                    log.warning(msg, self.info['path'], RESULTS_QUEUE_TIMEOUT,
-                                max_tries, backoff)
+                    msg = ("result queue still full after waiting %ss - "
+                           "trying again (retries=%s, backoff=%ss)")
+                    log.info(msg, RESULTS_QUEUE_TIMEOUT, max_tries, backoff)
 
                 max_tries -= 1
                 # backoff for short while to allow queue contents to be
@@ -415,9 +412,7 @@ class SearchTaskStats(UserDict):
                      'lines_searched': 0,
                      'jobs_completed': 0,
                      'total_jobs': 0,
-                     'results': 0,
-                     'parts_deduped': 0,
-                     'parts_non_deduped': 0}
+                     'results': 0}
 
     def update(self, stats):  # pylint: disable=arguments-differ
         if not stats:

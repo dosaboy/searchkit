@@ -1,6 +1,5 @@
 """ Searchkit unit tests. """
 import glob
-import multiprocessing
 import os
 import re
 import tempfile
@@ -19,8 +18,9 @@ from searchkit.search import (
     logrotate_log_sort,
     SearchCatalog,
     SearchResultsCollection,
+)
+from searchkit.results_store import (
     ResultStoreSimple,
-    ResultStoreParallel,
 )
 from searchkit.result import SearchResult
 from searchkit.constraints import (
@@ -952,36 +952,3 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
 
             f.add(SearchDef(r'(.+)', tag='simple'), fpath)
             f.run()
-
-
-class TestResultStore(TestSearchKitBase):
-    """ Test results store implementations. """
-
-    def rs_tests(self, rs):
-        self.assertEqual(rs.add(None, None, 'foo'), (None, None, 0))
-        self.assertEqual(rs.add(None, None, 'bar'), (None, None, 1))
-        self.assertEqual(rs.add(None, None, 'foo'), (None, None, 0))
-        self.assertEqual(rs.add('tag1', None, 'foo'), (2, None, 0))
-        self.assertEqual(rs.add('tag1', 'seq1', 'foo'), (2, 3, 0))
-        self.assertEqual(rs.add('tag1', 'seq1', 'foo'), (2, 3, 0))
-        rs.sync()
-
-    def test_resultstore_simple(self):
-        rs = ResultStoreSimple()
-        self.rs_tests(rs)
-        self.assertEqual(rs[0], 'foo')
-        self.assertEqual(rs[1], 'bar')
-        self.assertEqual(rs[2], 'tag1')
-        self.assertEqual(rs[3], 'seq1')
-
-    def test_resultstore_parallel(self):
-        with multiprocessing.Manager() as mgr:
-            rs = ResultStoreParallel(mgr)
-            p = multiprocessing.Process(target=self.rs_tests, args=(rs, ))
-            p.start()
-            p.join()
-            rs.unproxy_results()
-            self.assertEqual(rs[0], 'foo')
-            self.assertEqual(rs[1], 'bar')
-            self.assertEqual(rs[2], 'tag1')
-            self.assertEqual(rs[3], 'seq1')
