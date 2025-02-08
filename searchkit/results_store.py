@@ -34,6 +34,10 @@ class ResultStoreBase(UserDict):
 
     @property
     def allocations(self):
+        """
+        Get current allocation block. This is only used if a preallocator is
+        provided. When allocation range has been used a new one is requested.
+        """
         if not self.f_preallocator:
             return None
 
@@ -78,6 +82,8 @@ class ResultStoreBase(UserDict):
 
         @param value: arbitrary value to store
         @param store: implementation of ResultStoreBase
+        @param idx: optional index at which the value will be inserted. If not
+                    provided the next available slot is used.
         """
         if value is None:
             return None
@@ -135,6 +141,8 @@ class ResultStoreParallel(ResultStoreBase):
         self._local_store = None
 
     def preallocate(self, size):
+        """ Allocate a block of indexes. This is passed to worker processes
+        so they can save data to their local store with global indexes. """
         with RESULTS_STORE_LOCK:
             current = self.alloc_pointer.value
             allocated = list(range(current, current + size))
