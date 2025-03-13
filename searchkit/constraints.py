@@ -923,6 +923,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):  # noqa, pylint: disabl
             log.debug("using cached offset")
             return self._results[fd.name]
 
+        newpos = 0
         log.debug("c:%s: starting binary seek search to %s in file %s "
                   "(destructive=True)", self.id, self.since_date, fd.name)
         try:
@@ -941,26 +942,28 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):  # noqa, pylint: disabl
                 self._results[fd.name] = new_offset
         except NoTimestampsFoundInFile:
             log.debug("c:%s no timestamp found in file", self.id)
-            fd.seek(0)
-            return fd.tell()
+            newpos = fd.seek(0)
         except NoValidLinesFoundInFile:
             log.debug("c:%s no date after %s found in file - seeking to end",
                       self.since_date, self.id)
-            fd.seek(0, 2)
-            return fd.tell()
+            newpos = fd.seek(0, 2)
         except TooManyLinesWithoutDate as exc:
             log.warning("c:%s failed to find a line containing a date: %s",
                         self.id, exc)
-            fd.seek(0)
-            return fd.tell()
+            newpos = fd.seek(0)
         except MaxSearchableLineLengthReached as exc:
-            log.error("c:%s exceeded allowed line length search limit "
-                      "before finding line feed: %s", self.id, exc)
-            raise
+            log.warning("c:%s exceeded allowed line length search limit "
+                        "before finding line feed: %s"
+                        " - moving to EOF to skip searching this file",
+                        self.id, exc)
+            newpos = fd.seek(0, 2)
+        else:
+            # seek completed without issues
+            log.debug("c:%s: finished binary seek search in file %s, "
+                      "offset %d", self.id, fd.name, self._results[fd.name])
+            newpos = self._results[fd.name]
 
-        log.debug("c:%s: finished binary seek search in file %s, offset %d",
-                  self.id, fd.name, self._results[fd.name])
-        return self._results[fd.name]
+        return newpos
 
     def stats(self):
         _stats = {'lines_searched': self._lines_searched,

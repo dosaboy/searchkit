@@ -4,8 +4,10 @@ import re
 import tempfile
 import shutil
 import subprocess
+import logging
 from datetime import datetime
 from unittest import mock
+from unittest.mock import patch
 from io import BytesIO
 
 from searchkit.constraints import (
@@ -205,6 +207,23 @@ class TestSearchConstraints(TestSearchKitBase):
 
         stats = {'line': {'fail': 0, 'pass': 0}, 'lines_searched': 0}
         self.assertEqual(c.stats(), stats)
+
+    @patch.object(LogFileDateSinceSeeker, 'run',
+                  side_effect=MaxSearchableLineLengthReached)
+    @patch.object(logging.Logger, "warning")
+    @utils.create_files({'f1': LOGS_W_TS})
+    def test_apply_to_file_throw_max_line_len_err(self, mock_log, mock_lfdss):
+        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        _file = os.path.join(self.data_root, 'f1')
+        c = SearchConstraintSearchSince(current_date=self.current_date,
+                                        ts_matcher_cls=TimestampSimple, days=7)
+        with open(_file, 'rb') as fd:
+            c.apply_to_file(fd)
+            args, kwargs = mock_log.call_args
+            self.assertTrue("c:%s exceeded allowed line length search limit "
+                            "before finding line feed: %s"
+                            " - moving to EOF to skip searching this file"
+                            in args)
 
 
 class TestSearchState(TestSearchKitBase):
