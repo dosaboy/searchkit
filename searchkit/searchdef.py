@@ -33,7 +33,7 @@ class SearchDef(SearchDefBase):
 
     Search definition used to identify content in a single line.
     """
-    def __init__(self, pattern, tag=None, hint=None,  # noqa, pylint: disable=too-many-arguments
+    def __init__(self, pattern, tag=None, hint=None,  # noqa, pylint: disable=too-many-arguments, too-many-positional-arguments
                  store_result_contents=True, field_info=None, **kwargs):
         """
         Simple search definition.

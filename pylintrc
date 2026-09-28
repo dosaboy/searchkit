@@ -6,10 +6,6 @@ ignore=.git
 # usually to register additional checkers.
 load-plugins=pylint.extensions.no_self_use
 
-# When enabled, pylint would attempt to guess common misconfiguration and emit
-# user-friendly hints instead of false-positive error messages.
-suggestion-mode=yes
-
 [FORMAT]
 max-line-length=79
 # Allow doctrings containing long urls

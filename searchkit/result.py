@@ -75,7 +75,7 @@ class SearchResultMinimal(SearchResultBase):
     Minimal search result implementation optimised for IPC transfer between
     worker tasks and the main collector process.
     """
-    def __init__(self, data, metadata, linenumber, source_id,  # noqa,pylint: disable=too-many-arguments
+    def __init__(self, data, metadata, linenumber, source_id,  # noqa,pylint: disable=too-many-arguments, too-many-positional-arguments
                  sequence_section_id, field_info):
         """
         This is a minimised representation of a SearchResult object so as to
@@ -141,7 +141,7 @@ class SearchResult(SearchResultBase):  # noqa,pylint: disable=too-many-instance-
     queue and is only intended to be used locally to the search task before
     sending the compressed result back to the collector.
     """
-    def __init__(self, linenumber, source_id, result, search_def,  # noqa,pylint: disable=too-many-arguments
+    def __init__(self, linenumber, source_id, result, search_def,  # noqa,pylint: disable=too-many-arguments, too-many-positional-arguments
                  results_store, sequence_section_id=None):
         """
         @param linenumber: line number that produced a match.
