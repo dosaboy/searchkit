@@ -32,9 +32,13 @@ class TestResultStore(utils.BaseTestCase):
         self.assertEqual(rs[3], 'seq1')
 
     def test_resultstore_parallel(self):
-        with multiprocessing.Manager() as mgr:
+        # Use an explicit fork context; as of Python 3.14 the default start
+        # method on Linux is forkserver, which pickles the target/args and
+        # cannot serialise this bound method (it drags in the TestCase).
+        ctx = multiprocessing.get_context('fork')
+        with ctx.Manager() as mgr:
             rs = ResultStoreParallel(mgr, prealloc_block_size=2)
-            p = multiprocessing.Process(target=self.rs_tests, args=(rs, ))
+            p = ctx.Process(target=self.rs_tests, args=(rs, ))
             p.start()
             p.join()
             rs.unproxy_results()

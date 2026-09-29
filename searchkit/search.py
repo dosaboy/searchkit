@@ -727,8 +727,13 @@ class FileSearcher(SearcherBase):
                             results_queue=results_queue)
         try:
             num_workers = self.num_parallel_tasks
+            # Force the fork start method; as of Python 3.14 the default on
+            # Linux is forkserver, but this code relies on workers inheriting
+            # state (e.g. ForkProcess) rather than pickling it.
+            mp_context = multiprocessing.get_context('fork')
             with concurrent.futures.ProcessPoolExecutor(
-                                    max_workers=num_workers) as executor:
+                                    max_workers=num_workers,
+                                    mp_context=mp_context) as executor:
                 jobs = {}
                 for info in self.catalog:
                     c_mgr = self.constraints_manager
@@ -793,7 +798,11 @@ class FileSearcher(SearcherBase):
         log.debug(repr(self.catalog))
         if len(self.files) > 1:
             log.debug("running searches (parallel=True)")
-            with multiprocessing.Manager() as mgr:
+            # Force the fork start method; as of Python 3.14 the default on
+            # Linux is forkserver, but this code relies on workers inheriting
+            # state rather than pickling it.
+            mp_context = multiprocessing.get_context('fork')
+            with mp_context.Manager() as mgr:
                 rs = ResultStoreParallel(mgr)
                 results = SearchResultsCollection(self.catalog, rs)
                 self._run_mp(mgr, results, rs)
