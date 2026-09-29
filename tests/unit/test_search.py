@@ -702,7 +702,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Wed Jan 10 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Mon Jan 10 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -719,7 +719,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Wed Jan 1 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sat Jan 1 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -737,7 +737,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sun Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -753,7 +753,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sat Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -770,7 +770,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 15 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sat Jan 15 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -786,7 +786,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sat Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -803,7 +803,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 01 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sat Jan 01 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -820,7 +820,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 03 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Mon Jan 03 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=1)
         s = FileSearcher(constraint=c)
@@ -836,7 +836,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sun Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -853,7 +853,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         Test scenario: file contains a single unverifiable line and we expect
         pointers to be reset to start of file.
         """
-        self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sun Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -872,7 +872,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         we are not able to match a timestamp to verify on any line then we have
         to deem the file contents as valid.
         """
-        self.current_date = self.get_date('Tue Jan 09 00:00:00 UTC 2022')
+        self.current_date = self.get_date('Sun Jan 09 00:00:00 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         ts_matcher_cls=TimestampSimple, days=7)
         s = FileSearcher(constraint=c)
@@ -889,7 +889,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        self.current_date = self.get_date('Mon Jan 03 00:00:01 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
@@ -906,7 +906,7 @@ class TestSearchKit(TestSearchKitBase):  # noqa,pylint: disable=too-many-public-
         """
         Test scenario:
         """
-        self.current_date = self.get_date('Tue Jan 03 00:00:01 UTC 2022')
+        self.current_date = self.get_date('Mon Jan 03 00:00:01 UTC 2022')
         c = SearchConstraintSearchSince(current_date=self.current_date,
                                         hours=24,
                                         ts_matcher_cls=TimestampSimple)
