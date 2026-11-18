@@ -8,6 +8,7 @@ import abc
 import re
 import uuid
 import bisect
+import warnings
 from enum import Enum
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -27,7 +28,26 @@ class TimestampMatcherBase():
     # used when converting a string to datetime.datetime
     DEFAULT_DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
-    def __init__(self, line):
+    def __init__(self, *args):
+        self.result = None
+
+        """
+        DEPRECATED: using the __init__ method to peform a match is deprecated.
+        The match_and_save() method should be used instead.
+        """
+        if args:
+            warnings.warn("Using the __init__() method to perform a match is "
+                          "deprecated. Use the match_and_save() method "
+                          "instead.",
+                          DeprecationWarning)
+            self.match_and_save(*args)
+
+    def match_and_save(self, line):
+        """
+        Match timestamp in line and save result.
+
+        If no match is found the last result is cleared.
+        """
         self.result = None
         for expr in self.patterns:
             ret = re.match(expr, line)
@@ -844,6 +864,7 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):  # noqa, pylint: disabl
         """
         super().__init__(**kwargs)
         self.ts_matcher_cls = ts_matcher_cls
+        self.ts_matcher = ts_matcher_cls()
         self.current_date = datetime.strptime(current_date, self.date_format)
         self._line_pass = 0
         self._line_fail = 0
@@ -870,9 +891,9 @@ class SearchConstraintSearchSince(BinarySeekSearchBase):  # noqa, pylint: disabl
             # need this for e.g. gzipped files
             line = line.decode("utf-8", errors='backslashreplace')
 
-        timestamp = self.ts_matcher_cls(line)
-        if timestamp.matched:
-            return timestamp.strptime
+        self.ts_matcher.match_and_save(line)
+        if self.ts_matcher.matched:
+            return self.ts_matcher.strptime
 
         return None
 

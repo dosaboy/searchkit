@@ -1,5 +1,6 @@
 """ Searchkit unit tests utilities. """
 import os
+import warnings
 import unittest
 
 # disable debug for stestr otherwise output is much too verbose
@@ -39,6 +40,7 @@ def create_files(files_to_create):
 class BaseTestCase(unittest.TestCase):
     """ Custom test case for all unit tests. """
     def setUp(self):
+        warnings.simplefilter('default', DeprecationWarning)
         self.maxDiff = None  # pylint: disable=invalid-name
         if os.environ.get('TESTS_LOG_LEVEL_DEBUG', 'no') == 'yes':
             set_log_level(logging.DEBUG)
