@@ -1,4 +1,5 @@
 """ Search task implementations. """
+import datetime
 import gzip
 import os
 import queue
@@ -68,6 +69,26 @@ class QueueTransitBuffer(UserList):
     """ A variable length buffer for the transfer of results back to the main
     collector process."""
     MAX = 10
+
+
+class SearchElapsedTime:
+    """ Provide elapsed time for a search. """
+    def __init__(self):
+        self.line_start_t = None
+
+    def __enter__(self):
+        self.line_start_t = datetime.datetime.now()
+        return self
+
+    @cached_property
+    def delta(self):
+        line_finish_t = datetime.datetime.now()
+        return round((line_finish_t -
+                      self.line_start_t).total_seconds() * 1000, 2)
+
+    def __exit__(self, *args, **kwargs):
+        # We want exceptions to be raised
+        return False
 
 
 class SearchTask():  # pylint: disable=too-many-instance-attributes
@@ -301,6 +322,34 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
                 if len(self.results_buffer) >= NUM_BUFFERED_RESULTS:
                     self._flush_results_buffer()
 
+    def _line_search(self, runnable, ln, line, sequence_results):
+        """
+        Perform search on line.
+
+        @param runnable: dictionary of searchdef ids and boolean depicting
+                         if their constraint(s) have been met yet.
+        @param ln: current line number
+        @param line: utf-8 encoded line
+        @param sequence_results: SequenceSearchResults object
+        """
+        for s_def in self.search_defs:
+            if not runnable[s_def.id]:
+                ret = self.constraints_manager.apply_single(s_def, line)
+                if not ret.line_is_valid:
+                    continue
+
+                # enable from here on in if *all* constraints passed
+                runnable[s_def.id] = ret.all_constraints_passed
+
+            if isinstance(s_def, SequenceSearchDef):
+                self._sequence_search(s_def, line, ln, sequence_results)
+            else:
+                self._simple_search(s_def, line, ln)
+
+    @staticmethod
+    def _avg(times):
+        return round(sum(times) / len(times), 2)
+
     def _run_search(self, fd):
         """
         @param fd: open file descriptor
@@ -314,34 +363,36 @@ class SearchTask():  # pylint: disable=too-many-instance-attributes
         runnable = {s.id: _runnable
                     for s, _runnable in self.search_defs.items()}
         ln = 0
+        slowest = None
+        chunk_slowest = [0]
         # NOTE: line numbers start at 1 hence offset + 1
         for ln, line in enumerate(fd, start=1):
-            # This could be helpful to show progress for large files
             if ln % 100000 == 0:
-                self.show_mem_usage(f"{ln} lines searched in {fd.name}")
+                self.show_mem_usage(f"{ln} lines searched in {fd.name} "
+                                    "(slowest (avg/max) "
+                                    f"{self._avg(chunk_slowest)}/{slowest}ms)")
+                chunk_slowest.append(0)
 
+            with SearchElapsedTime() as stime:
+                self._line_search(runnable, ln,
+                                  line.decode("utf-8", **self.decode_kwargs),
+                                  sequence_results)
+                if not slowest or stime.delta > slowest:
+                    slowest = stime.delta
+
+                if stime.delta > chunk_slowest[-1]:
+                    chunk_slowest[-1] = stime.delta
+
+            # This could be helpful to show progress for large files
             self.stats['lines_searched'] += 1
-            line = line.decode("utf-8", **self.decode_kwargs)
-
-            for s_def in self.search_defs:
-                if not runnable[s_def.id]:
-                    ret = self.constraints_manager.apply_single(s_def, line)
-                    if not ret.line_is_valid:
-                        continue
-
-                    # enable from here on in if *all* constraints passed
-                    runnable[s_def.id] = ret.all_constraints_passed
-
-                if isinstance(s_def, SequenceSearchDef):
-                    self._sequence_search(s_def, line, ln, sequence_results)
-                else:
-                    self._simple_search(s_def, line, ln)
 
         self._process_sequence_results(sequence_results, ln)
         # allow garbage collect
         sequence_results = {}
 
-        log.debug("completed search of %s lines", self.stats['lines_searched'])
+        log.debug("completed search of %s lines (slowest (avg/max) "
+                  f"{self._avg(chunk_slowest)}/{slowest}ms",
+                  self.stats['lines_searched'])
         if self.search_defs_conditional:
             msg = f"constraints stats {fd.name}:"
             for sd in self.search_defs_conditional:

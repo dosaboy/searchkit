@@ -12,12 +12,8 @@ import multiprocessing
 import os
 import queue
 import re
-import signal
-import subprocess
 import threading
-import time
 from collections import namedtuple, UserDict
-from datetime import datetime, timedelta
 
 import psutil
 from searchkit.log import log
@@ -37,6 +33,7 @@ from searchkit.results_store import (
     ResultStoreSimple,
 )
 
+RESULTS_INFO_LOG_INTERVAL = 5
 RESULTS_COLLECTION_LOCK = multiprocessing.Lock()
 
 
@@ -566,7 +563,7 @@ class FileSearcher(SearcherBase):
     @staticmethod
     def _get_info(event, results, results_store, stats, proc):
         """
-        Collect results from all search task processes.
+        Log progress information for all collected results.
 
         @param event: threading.Event() object used to stop this thread.
         @param results: SearchResultsCollection object.
@@ -574,30 +571,27 @@ class FileSearcher(SearcherBase):
         @param stats: SearchTaskStats object
         @param proc: psutil.Process() object for local process.
         """
-        then = None
-        while True:
-            if event.is_set():
-                log.debug("exiting info thread")
-                break
+        # event.wait() returns as soon as the event is set so that stopping
+        # this thread does not have to wait for a full sleep interval to
+        # elapse.
+        while not event.is_set():
+            with RESULTS_STORE_LOCK:
+                allocations = len(results_store)
 
-            if not then or datetime.now() >= then + timedelta(seconds=5):
-                with RESULTS_STORE_LOCK:
-                    allocations = len(results_store)
+            with RESULTS_COLLECTION_LOCK:
+                num_results = len(results)
 
-                with RESULTS_COLLECTION_LOCK:
-                    num_results = len(results)
+            rss = int(proc.memory_info().rss / 1024 ** 2)
+            log.debug("total %s results received (rss=%sM, "
+                      "store_allocations=%s), "
+                      "%s/%s jobs completed - "
+                      "waiting for more", num_results, rss,
+                      allocations,
+                      stats['jobs_completed'], stats['total_jobs'])
 
-                rss = int(proc.memory_info().rss / 1024 ** 2)
-                log.debug("total %s results received (rss=%sM, "
-                          "store_allocations=%s), "
-                          "%s/%s jobs completed - "
-                          "waiting for more", num_results, rss,
-                          allocations,
-                          stats['jobs_completed'], stats['total_jobs'])
+            event.wait(RESULTS_INFO_LOG_INTERVAL)
 
-                then = datetime.now()
-
-            time.sleep(1)
+        log.debug("exiting info thread")
 
     @staticmethod
     def _get_results(event, results, results_queue):
@@ -611,18 +605,21 @@ class FileSearcher(SearcherBase):
         """
         log.debug("fetching results from worker queues")
         while True:
-            if not results_queue.empty():
-                with RESULTS_COLLECTION_LOCK:
-                    results.add(results_queue.get())
+            # Use a single blocking get(timeout=...) rather than polling with
+            # empty()+get()+sleep(). This avoids a redundant IPC round trip to
+            # the queue's manager process for every result received and still
+            # reacts to the stop event within one timeout period.
+            try:
+                result = results_queue.get(timeout=0.1)
+            except queue.Empty:
+                if event.is_set():
+                    log.debug("exiting results thread")
+                    break
 
-                # if len(results) % 1000 == 0:
-                #     log.debug("received %s results", len(results))
-            elif event.is_set():
-                log.debug("exiting results thread")
-                break
-            else:
-                # yield
-                time.sleep(0.1)
+                continue
+
+            with RESULTS_COLLECTION_LOCK:
+                results.add(result)
 
         with RESULTS_COLLECTION_LOCK:
             log.debug("stopped fetching results (total received=%s)",
@@ -641,55 +638,42 @@ class FileSearcher(SearcherBase):
         """
         log.debug("purging results (expected=%s)", expected)
 
-        while True:
-            with RESULTS_COLLECTION_LOCK:
-                if not results_queue.empty():
-                    results.add(results_queue.get())
-                elif expected > len(results):
-                    try:
-                        results.add(results_queue.get(
-                            timeout=RESULTS_QUEUE_TIMEOUT))
-                    except queue.Empty:
-                        log.info("timeout waiting > %s secs to receive "
-                                 "results - expected=%s, actual=%s",
-                                 RESULTS_QUEUE_TIMEOUT, expected, len(results))
-                else:
-                    break
+        # By this point the results collector thread has already stopped so
+        # there is no concurrent writer to guard against here. This is just a
+        # final sweep to catch any results that were still in transit between
+        # a worker process and this one.
+        while expected > len(results):
+            try:
+                results.add(results_queue.get(timeout=RESULTS_QUEUE_TIMEOUT))
+            except queue.Empty:
+                log.info("timeout waiting > %s secs to receive results - "
+                         "expected=%s, actual=%s", RESULTS_QUEUE_TIMEOUT,
+                         expected, len(results))
+                break
 
         log.debug("stopped purging results (total received=%s)",
                   len(results))
 
     @staticmethod
-    def _ensure_worker_processes_killed():
+    def _ensure_worker_processes_killed(executor):
         """
         For some reason it is sometimes possible to for pool termination to
         hang indefinitely because one or more worker process fails to
         terminate. This method ensures that all extant worker child processes
         are killed so that pool termination is guaranteed to complete.
+
+        @param executor: ProcessPoolExecutor whose workers we want killed.
         """
         log.debug("ensuring all pool workers killed")
-        worker_pids = []
-        for child in multiprocessing.active_children():
-            if isinstance(child, multiprocessing.context.ForkProcess):
-                if 'ForkProcess' in child.name:
-                    worker_pids.append(child.pid)
-
-        ps_out = subprocess.check_output(['ps', '-opid', '--no-headers',
-                                          '--ppid',
-                                          str(os.getpid())], encoding='utf8')
-        child_pids = [int(line.strip()) for line in ps_out.splitlines()]
-        log.debug("process has child pids: %s", child_pids)
-        for wpid in worker_pids:
-            if int(wpid) not in child_pids:
-                log.error("worker pid %s no longer a child of this process "
-                          "(%s)", wpid, os.getpid())
-                continue
-
+        # Only target the executor's own worker pids - the current process
+        # may have other children (e.g. the multiprocessing.Manager server
+        # process) that must be left alone.
+        for pid in list(executor._processes):  # noqa, pylint: disable=protected-access
             try:
-                log.debug('sending SIGKILL to worker process %s', wpid)
-                os.kill(wpid, signal.SIGILL)
-            except ProcessLookupError:
-                log.debug('worker process %s already killed', wpid)
+                psutil.Process(pid).kill()
+                log.debug('sent SIGKILL to worker process %s', pid)
+            except psutil.NoSuchProcess:
+                log.debug('worker process %s already killed', pid)
 
     def _run_single(self, results_collection, results_store):
         """ Run a single search using this process.
@@ -774,7 +758,7 @@ class FileSearcher(SearcherBase):
                 self._purge_results(results, results_queue,
                                     self.stats['results'])
 
-                self._ensure_worker_processes_killed()
+                self._ensure_worker_processes_killed(executor)
                 log.debug("terminating pool")
         finally:
             results_thread.stop()

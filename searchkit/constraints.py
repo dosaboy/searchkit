@@ -30,6 +30,7 @@ class TimestampMatcherBase():
 
     def __init__(self, *args):
         self.result = None
+        self.pattern_affinity_idx = None
 
         """
         DEPRECATED: using the __init__ method to peform a match is deprecated.
@@ -49,9 +50,21 @@ class TimestampMatcherBase():
         If no match is found the last result is cleared.
         """
         self.result = None
-        for expr in self.patterns:
+        if self.pattern_affinity_idx is not None:
+            idx = self.pattern_affinity_idx
+            _patterns = [self.patterns[idx]] + self.patterns
+            _patterns.pop(idx)
+        else:
+            _patterns = self.patterns
+
+        for idx, expr in enumerate(_patterns):
             ret = re.match(expr, line)
             if ret:
+                if self.pattern_affinity_idx is None:
+                    self.pattern_affinity_idx = idx
+                else:
+                    self.pattern_affinity_idx = self.patterns.index(expr)
+
                 self.result = ret
                 break
         else:
