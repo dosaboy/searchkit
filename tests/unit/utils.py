@@ -1,8 +1,13 @@
 """ Searchkit unit tests utilities. """
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 import warnings
 import unittest
 
+from searchkit.constraints import TimestampMatcherBase
 # disable debug for stestr otherwise output is much too verbose
 from searchkit.log import log, logging, set_log_level
 
@@ -54,3 +59,37 @@ class BaseTestCase(unittest.TestCase):
         a test completes regardless of success. Otherwise it emits a warning.
         This generic implementation helps suppress it and possibly others in
         the future. """
+
+
+class TimestampSimple(TimestampMatcherBase):
+    """ Test timestamp implementation. """
+
+    @property
+    def patterns(self):
+        return [r'^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})+\s+'
+                r'(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d+)']
+
+
+class TestSearchKitBase(BaseTestCase):
+    """ Base class for tests that search files under a temporary data_root. """
+
+    @property
+    def datetime_expr(self):
+        return r"^([\d-]+\s+[\d:]+)"
+
+    @staticmethod
+    def get_date(date):
+        cmd = ["date", "--utc", f"--date={date}",
+               '+' + TimestampSimple.DEFAULT_DATETIME_FORMAT]
+        out = subprocess.check_output(cmd)
+        out = re.compile(r"\s+").sub(' ', out.decode('UTF-8')).strip()
+        return out
+
+    def setUp(self):
+        super().setUp()
+        self.current_date = self.get_date("Thu Feb 10 16:19:17 UTC 2022")
+        self.data_root = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.data_root)
+        super().tearDown()

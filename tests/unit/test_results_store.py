@@ -65,6 +65,16 @@ class TestResultStore(utils.BaseTestCase):
             self.assertEqual(rs._allocate_next('foo'), 0)
             self.assertEqual(rs._allocate_next('bar'), 1)
 
+    def test_resultstore_parallel_lock_per_store(self):
+        with multiprocessing.Manager() as mgr:
+            rs1 = ResultStoreParallel(mgr)
+            rs2 = ResultStoreParallel(mgr)
+            # simulate a lock abandoned by a killed worker
+            self.assertTrue(rs1.lock.acquire())
+            self.assertTrue(rs2.lock.acquire(timeout=1))
+            rs2.lock.release()
+            rs1.lock.release()
+
     def test_resultstore_parallel_local(self):
         # pylint: disable=protected-access
         with multiprocessing.Manager() as mgr:

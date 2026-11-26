@@ -1,19 +1,16 @@
 """ Search result store implementations. """
 import copy
-import multiprocessing
 import os
 from collections import UserDict
 
 from searchkit.log import log
 from searchkit.exception import ResultStoreException
 
-RESULTS_STORE_LOCK = multiprocessing.Lock()
-
 
 def rs_locked(f):
-    def _rs_locked_inner(*args, **kwargs):
-        with RESULTS_STORE_LOCK:
-            return f(*args, **kwargs)
+    def _rs_locked_inner(self, *args, **kwargs):
+        with self.lock:
+            return f(self, *args, **kwargs)
 
     return _rs_locked_inner
 
@@ -129,6 +126,9 @@ class ResultStoreParallel(ResultStoreBase):
 
     def __init__(self, mgr, **kwargs):
         super().__init__(**kwargs)
+        # Per-store (not module-global) so that a lock abandoned by a killed
+        # worker is never reused by a later search.
+        self.lock = mgr.Lock()
         # Replace super attributes with MP-safe equivalents
         self.alloc_pointer = mgr.Value('i', 0)
         self.data = mgr.dict()
@@ -140,27 +140,27 @@ class ResultStoreParallel(ResultStoreBase):
         # with the main store until the end which is a slow action.
         self._local_store = None
 
+    @rs_locked
     def preallocate(self, size):
         """ Allocate a block of indexes. This is passed to worker processes
         so they can save data to their local store with global indexes. """
-        with RESULTS_STORE_LOCK:
-            current = self.alloc_pointer.value
-            allocated = list(range(current, current + size))
-            self.alloc_pointer.value += size
-            log.debug("owner=%s allocated range: %s:%s",
-                      self._local_store['owner'],
-                      allocated[0], allocated[-1])
+        current = self.alloc_pointer.value
+        allocated = list(range(current, current + size))
+        self.alloc_pointer.value += size
+        log.debug("owner=%s allocated range: %s:%s",
+                  self._local_store['owner'],
+                  allocated[0], allocated[-1])
 
         return allocated
 
+    @rs_locked
     def _allocate_next(self, value):
         """
         We allocate from the shared store but save to the local store. This way
         allocations are global/shared between all workers. When we finally sync
         the local store to the shared store the allocations will not conflict.
         """
-        with RESULTS_STORE_LOCK:
-            return super()._allocate_next(value)
+        return super()._allocate_next(value)
 
     @property
     def local(self):
